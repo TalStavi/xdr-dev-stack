@@ -2476,7 +2476,7 @@ auto_start_verify() {
   
   # Generate test data
   info "Generating test data with ./run-generator.sh"
-  ./run-generator.sh --duration 20 --endpoints 5 || {a
+  ./run-generator.sh --duration 20 --endpoints 5 || {
     warning "Failed to generate test data. Continuing anyway..."
   }
   
