@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-cyber-black text-cyber-text;
+    background-image: radial-gradient(circle at 80% 10%, rgba(0, 112, 243, 0.1) 0%, rgba(0, 0, 0, 0) 30%),
+                      radial-gradient(circle at 10% 90%, rgba(0, 204, 102, 0.1) 0%, rgba(0, 0, 0, 0) 30%);
+    min-height: 100vh;
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-cyber-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-cyber-light rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-cyber-blue;
+  }
+}
+
+@layer components {
+  .cyber-card {
+    @apply bg-cyber-dark border border-cyber-light rounded-md shadow-md backdrop-blur-sm p-4;
+    background: linear-gradient(145deg, rgba(26, 26, 26, 0.8), rgba(42, 42, 42, 0.5));
+  }
+  
+  .cyber-button {
+    @apply bg-cyber-dark border border-cyber-light hover:border-cyber-blue text-cyber-text 
+    rounded px-4 py-2 font-semibold transition-all duration-300 hover:shadow-neon-blue;
+  }
+
+  .cyber-input {
+    @apply bg-cyber-gray border border-cyber-light rounded-md px-4 py-2 
+    focus:outline-none focus:ring-1 focus:ring-cyber-blue focus:border-cyber-blue;
+  }
+
+  .grid-dashboard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+  }
+
+  .neon-highlight {
+    text-shadow: 0 0 5px currentColor;
+  }
+
+  /* Matrix Rain Animation Background */
+  .matrix-bg {
+    @apply fixed inset-0 w-full h-full pointer-events-none overflow-hidden z-0 opacity-10;
+  }
+}
+
+/* Cyberpunk Glitch Effect */
+.glitch {
+  position: relative;
+  animation: glitch 1s linear infinite;
+}
+
+@keyframes glitch {
+  2%, 64% {
+    transform: translate(2px, 0) skew(0deg);
+  }
+  4%, 60% {
+    transform: translate(-2px, 0) skew(0deg);
+  }
+  62% {
+    transform: translate(0, 0) skew(5deg);
+  }
+} 

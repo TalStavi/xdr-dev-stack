@@ -1,0 +1,31 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <max_memory_usage>2000000000</max_memory_usage>
+            <max_threads>4</max_threads>
+            <load_balancing>random</load_balancing>
+        </default>
+    </profiles>
+    <users>
+        <default>
+            <password>edrpassword</password>
+            <profile>default</profile>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <quota>default</quota>
+        </default>
+    </users>
+    <quotas>
+        <default>
+            <interval>
+                <duration>3600</duration>
+                <queries>0</queries>
+                <errors>0</errors>
+                <result_rows>0</result_rows>
+                <read_rows>0</read_rows>
+                <execution_time>0</execution_time>
+            </interval>
+        </default>
+    </quotas>
+</clickhouse>
