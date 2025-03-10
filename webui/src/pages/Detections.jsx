@@ -673,7 +673,7 @@ const Detections = () => {
                 <div className="border border-cyber-light/10 rounded-md bg-cyber-black/40 p-3">
                   <EventTimeline events={selectedDetection.events} />
                 </div>
-                
+{/*                 
                 <div className="mt-4">
                   <h4 className="text-xs font-medium text-cyber-text/70 mb-2 flex items-center">
                     <FiActivity className="mr-2 text-cyber-blue" size={12} />
@@ -683,6 +683,7 @@ const Detections = () => {
                     <RelatedEventsList events={selectedDetection.events} />
                   </div>
                 </div>
+                 */}
               </div>
             )}
           </motion.div>

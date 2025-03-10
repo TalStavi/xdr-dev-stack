@@ -248,48 +248,76 @@ io.on('connection', (socket) => {
   // Handle dashboard stats request
   socket.on('dashboard:stats', async () => {
     try {
-      // Get event count
+      // Get event count using endpoint_events_mv for better performance
       const eventCountQuery = `
-        SELECT count() as count
-        FROM edr.events
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
+        SELECT sum(event_count) as count
+        FROM edr.endpoint_events_mv
+        WHERE toDate(last_seen) >= today() - 1
       `;
       const eventCountResult = await clickhouse.query(eventCountQuery).toPromise();
       
-      // Get detection count
+      // Get detection count using endpoint_detections_mv for better performance
       const detectionCountQuery = `
-        SELECT count() as count
-        FROM edr.detections
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
+        SELECT sum(detection_count) as count
+        FROM edr.endpoint_detections_mv
+        WHERE date >= today() - 1
       `;
       const detectionCountResult = await clickhouse.query(detectionCountQuery).toPromise();
       
-      // Get severity distribution
+      // Get severity distribution from user_detections_mv for better performance
       const severityQuery = `
-        SELECT severity, count() as count
-        FROM edr.detections
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
+        SELECT severity, sum(detection_count) as count
+        FROM edr.user_detections_mv
+        WHERE date >= today() - 1
         GROUP BY severity
         ORDER BY severity
       `;
       const severityResult = await clickhouse.query(severityQuery).toPromise();
       
-      // Get event type distribution
+      // Get event type distribution from endpoint_events_mv for better performance
       const eventTypeQuery = `
-        SELECT event_type, count() as count
-        FROM edr.events
-        WHERE timestamp >= now() - INTERVAL 24 HOUR
+        SELECT event_type, sum(event_count) as count
+        FROM edr.endpoint_events_mv
+        WHERE toDate(last_seen) >= today() - 1
         GROUP BY event_type
         ORDER BY count DESC
         LIMIT 10
       `;
       const eventTypeResult = await clickhouse.query(eventTypeQuery).toPromise();
       
+      // Get top active endpoints
+      const activeEndpointsQuery = `
+        SELECT 
+          endpoint_id,
+          primary_user as user,
+          total_events as event_count
+        FROM edr.endpoint_details_mv
+        WHERE last_seen >= now() - INTERVAL 24 HOUR
+        ORDER BY total_events DESC
+        LIMIT 5
+      `;
+      const activeEndpointsResult = await clickhouse.query(activeEndpointsQuery).toPromise();
+      
+      // Get top active users
+      const activeUsersQuery = `
+        SELECT 
+          user,
+          total_events as event_count,
+          unique_endpoints
+        FROM edr.user_details_mv
+        WHERE last_seen >= now() - INTERVAL 24 HOUR
+        ORDER BY total_events DESC
+        LIMIT 5
+      `;
+      const activeUsersResult = await clickhouse.query(activeUsersQuery).toPromise();
+      
       const stats = {
         eventCount: eventCountResult[0]?.count || 0,
         detectionCount: detectionCountResult[0]?.count || 0,
         severityDistribution: severityResult,
-        eventTypeDistribution: eventTypeResult
+        eventTypeDistribution: eventTypeResult,
+        activeEndpoints: activeEndpointsResult,
+        activeUsers: activeUsersResult
       };
       
       socket.emit('dashboard:stats:data', stats);
@@ -304,48 +332,76 @@ io.on('connection', (socket) => {
     // Set up interval to poll for updated stats
     const statsPollInterval = setInterval(async () => {
       try {
-        // Get event count
+        // Get event count using endpoint_events_mv
         const eventCountQuery = `
-          SELECT count() as count
-          FROM edr.events
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          SELECT sum(event_count) as count
+          FROM edr.endpoint_events_mv
+          WHERE toDate(last_seen) >= today() - 1
         `;
         const eventCountResult = await clickhouse.query(eventCountQuery).toPromise();
         
-        // Get detection count
+        // Get detection count using endpoint_detections_mv
         const detectionCountQuery = `
-          SELECT count() as count
-          FROM edr.detections
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          SELECT sum(detection_count) as count
+          FROM edr.endpoint_detections_mv
+          WHERE date >= today() - 1
         `;
         const detectionCountResult = await clickhouse.query(detectionCountQuery).toPromise();
         
-        // Get severity distribution
+        // Get severity distribution from user_detections_mv
         const severityQuery = `
-          SELECT severity, count() as count
-          FROM edr.detections
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          SELECT severity, sum(detection_count) as count
+          FROM edr.user_detections_mv
+          WHERE date >= today() - 1
           GROUP BY severity
           ORDER BY severity
         `;
         const severityResult = await clickhouse.query(severityQuery).toPromise();
         
-        // Get event type distribution
+        // Get event type distribution from endpoint_events_mv
         const eventTypeQuery = `
-          SELECT event_type, count() as count
-          FROM edr.events
-          WHERE timestamp >= now() - INTERVAL 24 HOUR
+          SELECT event_type, sum(event_count) as count
+          FROM edr.endpoint_events_mv
+          WHERE toDate(last_seen) >= today() - 1
           GROUP BY event_type
           ORDER BY count DESC
           LIMIT 10
         `;
         const eventTypeResult = await clickhouse.query(eventTypeQuery).toPromise();
         
+        // Get top active endpoints (new)
+        const activeEndpointsQuery = `
+          SELECT 
+            endpoint_id,
+            primary_user as user,
+            total_events as event_count
+          FROM edr.endpoint_details_mv
+          WHERE last_seen >= now() - INTERVAL 24 HOUR
+          ORDER BY total_events DESC
+          LIMIT 5
+        `;
+        const activeEndpointsResult = await clickhouse.query(activeEndpointsQuery).toPromise();
+        
+        // Get top active users (new)
+        const activeUsersQuery = `
+          SELECT 
+            user,
+            total_events as event_count,
+            unique_endpoints
+          FROM edr.user_details_mv
+          WHERE last_seen >= now() - INTERVAL 24 HOUR
+          ORDER BY total_events DESC
+          LIMIT 5
+        `;
+        const activeUsersResult = await clickhouse.query(activeUsersQuery).toPromise();
+        
         const stats = {
           eventCount: eventCountResult[0]?.count || 0,
           detectionCount: detectionCountResult[0]?.count || 0,
           severityDistribution: severityResult,
-          eventTypeDistribution: eventTypeResult
+          eventTypeDistribution: eventTypeResult,
+          activeEndpoints: activeEndpointsResult,
+          activeUsers: activeUsersResult
         };
         
         socket.emit('dashboard:stats:live', stats);
@@ -368,15 +424,16 @@ io.on('connection', (socket) => {
   // Handle endpoints request
   socket.on('endpoints:get', async () => {
     try {
-      // Get unique endpoints from events
+      // Use the optimized endpoint_details_mv materialized view instead of querying events
       const query = `
         SELECT 
           endpoint_id,
-          any(user) as user,
-          max(timestamp) as last_seen,
-          count() as event_count
-        FROM edr.events
-        GROUP BY endpoint_id
+          primary_user as user,
+          last_seen,
+          total_events as event_count,
+          unique_users,
+          recent_event_types
+        FROM edr.endpoint_details_mv
         ORDER BY last_seen DESC
       `;
       
@@ -391,25 +448,52 @@ io.on('connection', (socket) => {
   // Handle endpoint details request
   socket.on('endpoint:details', async (endpointId) => {
     try {
-      // Get endpoint details
+      // Get endpoint details from the materialized view
       const detailsQuery = `
         SELECT 
           endpoint_id,
-          any(user) as user,
-          max(timestamp) as last_seen,
-          count() as event_count
-        FROM edr.events
+          primary_user as user,
+          last_seen,
+          total_events as event_count,
+          unique_event_types,
+          unique_users,
+          recent_event_types
+        FROM edr.endpoint_details_mv
         WHERE endpoint_id = '${endpointId}'
-        GROUP BY endpoint_id
       `;
       
-      // Get recent events for this endpoint
+      // Get event summary by type for this endpoint
+      const eventSummaryQuery = `
+        SELECT
+          endpoint_id,
+          event_type,
+          sum(event_count) as event_count,
+          max(last_seen) as last_seen,
+          sum(unique_users) as unique_users
+        FROM edr.endpoint_events_mv
+        WHERE endpoint_id = '${endpointId}'
+        GROUP BY endpoint_id, event_type
+        ORDER BY event_count DESC
+      `;
+      
+      // Get recent events for this endpoint (still using the base table for detailed data)
       const eventsQuery = `
         SELECT *
         FROM edr.events
         WHERE endpoint_id = '${endpointId}'
         ORDER BY timestamp DESC
         LIMIT 20
+      `;
+      
+      // Get detections summary for this endpoint
+      const detectionSummaryQuery = `
+        SELECT
+          endpoint_id,
+          sum(detection_count) as detection_count,
+          max(max_severity) as max_severity
+        FROM edr.endpoint_detections_mv
+        WHERE endpoint_id = '${endpointId}'
+        GROUP BY endpoint_id
       `;
       
       // Get recent detections for this endpoint
@@ -421,9 +505,11 @@ io.on('connection', (socket) => {
         LIMIT 20
       `;
       
-      const [details, events, detections] = await Promise.all([
+      const [details, eventSummary, events, detectionSummary, detections] = await Promise.all([
         clickhouse.query(detailsQuery).toPromise(),
+        clickhouse.query(eventSummaryQuery).toPromise(),
         clickhouse.query(eventsQuery).toPromise(),
+        clickhouse.query(detectionSummaryQuery).toPromise(),
         clickhouse.query(detectionsQuery).toPromise()
       ]);
       
@@ -455,7 +541,9 @@ io.on('connection', (socket) => {
       
       socket.emit('endpoint:details:data', {
         details: details[0] || {},
+        eventSummary,
         events,
+        detectionSummary: detectionSummary[0] || {},
         detections: detectionsWithEvents
       });
     } catch (error) {
@@ -467,15 +555,14 @@ io.on('connection', (socket) => {
   // Handle users request
   socket.on('users:get', async () => {
     try {
-      // Get unique users from events
+      // Use the optimized user_details_mv materialized view instead of querying events
       const query = `
         SELECT 
           user,
-          max(timestamp) as last_seen,
-          count() as event_count
-        FROM edr.events
-        WHERE user != ''
-        GROUP BY user
+          last_seen,
+          total_events as event_count,
+          unique_endpoints
+        FROM edr.user_details_mv
         ORDER BY last_seen DESC
       `;
       
@@ -490,18 +577,34 @@ io.on('connection', (socket) => {
   // Handle user details request
   socket.on('user:details', async (username) => {
     try {
-      // Get user details
+      // Get user details from the materialized view
       const detailsQuery = `
         SELECT 
           user,
-          max(timestamp) as last_seen,
-          count() as event_count
-        FROM edr.events
+          last_seen,
+          total_events as event_count,
+          unique_event_types,
+          unique_endpoints,
+          recent_endpoints
+        FROM edr.user_details_mv
         WHERE user = '${username}'
-        GROUP BY user
       `;
       
-      // Get recent events for this user
+      // Get event summary by type for this user
+      const eventSummaryQuery = `
+        SELECT
+          user,
+          event_type,
+          sum(event_count) as event_count,
+          max(last_seen) as last_seen,
+          sum(unique_endpoints) as unique_endpoints
+        FROM edr.user_events_mv
+        WHERE user = '${username}'
+        GROUP BY user, event_type
+        ORDER BY event_count DESC
+      `;
+      
+      // Get recent events for this user (still using the base table for detailed data)
       const eventsQuery = `
         SELECT *
         FROM edr.events
@@ -510,13 +613,27 @@ io.on('connection', (socket) => {
         LIMIT 20
       `;
       
-      const [details, events] = await Promise.all([
+      // Get detection summary for this user
+      const detectionSummaryQuery = `
+        SELECT
+          user,
+          max(severity) as max_severity,
+          sum(detection_count) as detection_count,
+          uniqExact(rule_id) as unique_rules
+        FROM edr.user_detections_mv
+        WHERE user = '${username}'
+        GROUP BY user
+      `;
+      
+      const [details, eventSummary, events, detectionSummary] = await Promise.all([
         clickhouse.query(detailsQuery).toPromise(),
-        clickhouse.query(eventsQuery).toPromise()
+        clickhouse.query(eventSummaryQuery).toPromise(),
+        clickhouse.query(eventsQuery).toPromise(),
+        clickhouse.query(detectionSummaryQuery).toPromise()
       ]);
       
-      // Get endpoints associated with this user
-      const endpointIds = events.map(event => `'${event.endpoint_id}'`).filter((value, index, self) => self.indexOf(value) === index);
+      // Get endpoints associated with this user from the materialized view
+      const endpointIds = details[0]?.recent_endpoints || [];
       
       // Initialize empty arrays
       let endpoints = [];
@@ -525,19 +642,24 @@ io.on('connection', (socket) => {
       // Only query if we have endpoints
       if (endpointIds.length > 0) {
         const endpointsQuery = `
-          SELECT *
-          FROM edr.endpoints
-          WHERE endpoint_id IN (${endpointIds})
+          SELECT 
+            endpoint_id,
+            primary_user as user,
+            last_seen,
+            total_events as event_count
+          FROM edr.endpoint_details_mv
+          WHERE endpoint_id IN (${endpointIds.map(id => `'${id}'`).join(',')})
         `;
         
         endpoints = await clickhouse.query(endpointsQuery).toPromise();
       }
       
+      // Get detections related to the user through their endpoints
       if (endpointIds.length > 0) {
         const detectionsQuery = `
           SELECT *
           FROM edr.detections
-          WHERE endpoint_id IN (${endpointIds})
+          WHERE endpoint_id IN (${endpointIds.map(id => `'${id}'`).join(',')})
           ORDER BY timestamp DESC
           LIMIT 20
         `;
@@ -573,7 +695,9 @@ io.on('connection', (socket) => {
       
       socket.emit('user:details:data', {
         details: details[0] || {},
+        eventSummary,
         events,
+        detectionSummary: detectionSummary[0] || {},
         endpoints,
         detections
       });
