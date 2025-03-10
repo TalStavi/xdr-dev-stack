@@ -153,7 +153,34 @@ io.on('connection', (socket) => {
       `;
       
       const result = await clickhouse.query(query).toPromise();
-      socket.emit('detections:data', result);
+      
+      // Fetch related events for each detection
+      const detectionsWithEvents = await Promise.all(
+        result.map(async (detection) => {
+          if (!detection.event_ids) return { ...detection, events: [] };
+          
+          // Split event_ids string into an array
+          const eventIds = detection.event_ids.split(',');
+          
+          // Fetch the events
+          const eventsQuery = `
+            SELECT *
+            FROM edr.events
+            WHERE id IN (${eventIds.map(id => `'${id}'`).join(',')})
+            ORDER BY timestamp ASC
+          `;
+          
+          try {
+            const events = await clickhouse.query(eventsQuery).toPromise();
+            return { ...detection, events };
+          } catch (error) {
+            console.error('Error fetching events for detection:', error);
+            return { ...detection, events: [] };
+          }
+        })
+      );
+      
+      socket.emit('detections:data', detectionsWithEvents);
     } catch (error) {
       console.error('Error fetching detections:', error);
       socket.emit('detections:error', { error: 'Failed to fetch detections' });
@@ -174,7 +201,34 @@ io.on('connection', (socket) => {
         `;
         
         const result = await clickhouse.query(query).toPromise();
-        socket.emit('detections:live', result);
+        
+        // Fetch related events for each detection
+        const detectionsWithEvents = await Promise.all(
+          result.map(async (detection) => {
+            if (!detection.event_ids) return { ...detection, events: [] };
+            
+            // Split event_ids string into an array
+            const eventIds = detection.event_ids.split(',');
+            
+            // Fetch the events
+            const eventsQuery = `
+              SELECT *
+              FROM edr.events
+              WHERE id IN (${eventIds.map(id => `'${id}'`).join(',')})
+              ORDER BY timestamp ASC
+            `;
+            
+            try {
+              const events = await clickhouse.query(eventsQuery).toPromise();
+              return { ...detection, events };
+            } catch (error) {
+              console.error('Error fetching events for detection:', error);
+              return { ...detection, events: [] };
+            }
+          })
+        );
+        
+        socket.emit('detections:live', detectionsWithEvents);
       } catch (error) {
         console.error('Error fetching live detections:', error);
       }
@@ -373,10 +427,36 @@ io.on('connection', (socket) => {
         clickhouse.query(detectionsQuery).toPromise()
       ]);
       
+      // Fetch related events for each detection
+      const detectionsWithEvents = await Promise.all(
+        detections.map(async (detection) => {
+          if (!detection.event_ids) return { ...detection, events: [] };
+          
+          // Split event_ids string into an array
+          const eventIds = detection.event_ids.split(',');
+          
+          // Fetch the events
+          const detectionEventsQuery = `
+            SELECT *
+            FROM edr.events
+            WHERE id IN (${eventIds.map(id => `'${id}'`).join(',')})
+            ORDER BY timestamp ASC
+          `;
+          
+          try {
+            const detectionEvents = await clickhouse.query(detectionEventsQuery).toPromise();
+            return { ...detection, events: detectionEvents };
+          } catch (error) {
+            console.error('Error fetching events for detection:', error);
+            return { ...detection, events: [] };
+          }
+        })
+      );
+      
       socket.emit('endpoint:details:data', {
         details: details[0] || {},
         events,
-        detections
+        detections: detectionsWithEvents
       });
     } catch (error) {
       console.error('Error fetching endpoint details:', error);
@@ -430,28 +510,29 @@ io.on('connection', (socket) => {
         LIMIT 20
       `;
       
-      // Get endpoints associated with this user
-      const endpointsQuery = `
-        SELECT 
-          endpoint_id,
-          max(timestamp) as last_seen,
-          count() as event_count
-        FROM edr.events
-        WHERE user = '${username}'
-        GROUP BY endpoint_id
-        ORDER BY last_seen DESC
-      `;
-      
-      const [details, events, endpoints] = await Promise.all([
+      const [details, events] = await Promise.all([
         clickhouse.query(detailsQuery).toPromise(),
-        clickhouse.query(eventsQuery).toPromise(),
-        clickhouse.query(endpointsQuery).toPromise()
+        clickhouse.query(eventsQuery).toPromise()
       ]);
       
-      // Get detections for the endpoints associated with this user
-      const endpointIds = endpoints.map(endpoint => `'${endpoint.endpoint_id}'`).join(',');
+      // Get endpoints associated with this user
+      const endpointIds = events.map(event => `'${event.endpoint_id}'`).filter((value, index, self) => self.indexOf(value) === index);
       
+      // Initialize empty arrays
+      let endpoints = [];
       let detections = [];
+      
+      // Only query if we have endpoints
+      if (endpointIds.length > 0) {
+        const endpointsQuery = `
+          SELECT *
+          FROM edr.endpoints
+          WHERE endpoint_id IN (${endpointIds})
+        `;
+        
+        endpoints = await clickhouse.query(endpointsQuery).toPromise();
+      }
+      
       if (endpointIds.length > 0) {
         const detectionsQuery = `
           SELECT *
@@ -462,6 +543,32 @@ io.on('connection', (socket) => {
         `;
         
         detections = await clickhouse.query(detectionsQuery).toPromise();
+        
+        // Fetch related events for each detection
+        detections = await Promise.all(
+          detections.map(async (detection) => {
+            if (!detection.event_ids) return { ...detection, events: [] };
+            
+            // Split event_ids string into an array
+            const eventIds = detection.event_ids.split(',');
+            
+            // Fetch the events
+            const detectionEventsQuery = `
+              SELECT *
+              FROM edr.events
+              WHERE id IN (${eventIds.map(id => `'${id}'`).join(',')})
+              ORDER BY timestamp ASC
+            `;
+            
+            try {
+              const detectionEvents = await clickhouse.query(detectionEventsQuery).toPromise();
+              return { ...detection, events: detectionEvents };
+            } catch (error) {
+              console.error('Error fetching events for detection:', error);
+              return { ...detection, events: [] };
+            }
+          })
+        );
       }
       
       socket.emit('user:details:data', {

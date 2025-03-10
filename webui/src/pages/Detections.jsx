@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { FiShield, FiFilter, FiX, FiRefreshCw, FiDownload, FiDatabase } from 'react-icons/fi';
+import { FiShield, FiFilter, FiX, FiRefreshCw, FiDownload, FiDatabase, FiClock, FiActivity } from 'react-icons/fi';
 
 import PageHeader from '../components/PageHeader';
 import DataTable from '../components/DataTable';
 import SeverityBadge from '../components/SeverityBadge';
 
 import { DetectionsService } from '../utils/api';
-import { formatDateTime } from '../utils/helpers';
+import { formatDateTime, formatTimeAgo } from '../utils/helpers';
 
 const Detections = () => {
   const navigate = useNavigate();
@@ -228,6 +228,100 @@ const Detections = () => {
     },
   ];
 
+  // Create a timeline component to display events
+  const EventTimeline = ({ events }) => {
+    if (!events || events.length === 0) return null;
+
+    // Sort events by timestamp
+    const sortedEvents = [...events].sort((a, b) => a.timestamp - b.timestamp);
+    
+    // Calculate time range for scaling the timeline
+    const startTime = sortedEvents[0].timestamp;
+    const endTime = sortedEvents[sortedEvents.length - 1].timestamp;
+    const timeRange = endTime - startTime;
+    const timelineWidth = 100; // percentage width
+    
+    // Helper to get event type icon
+    const getEventTypeIcon = (eventType) => {
+      const iconMap = {
+        'network': 'network',
+        'process': 'process',
+        'file': 'file',
+        'login': 'login',
+        'registry': 'registry'
+      };
+      
+      const eventTypeLower = (eventType || '').toLowerCase();
+      for (const [key, value] of Object.entries(iconMap)) {
+        if (eventTypeLower.includes(key)) {
+          return value;
+        }
+      }
+      
+      return 'activity';
+    };
+    
+    // Helper to get the icon component
+    const getIconComponent = (eventType) => {
+      switch(getEventTypeIcon(eventType)) {
+        default:
+          return <FiActivity size={18} />;
+      }
+    };
+    
+    return (
+      <div className="mt-4 relative">
+        <div className="absolute left-0 right-0 h-1 bg-cyber-gray/30 top-4"></div>
+        
+        {sortedEvents.map((event, index) => {
+          // Calculate position on timeline
+          const position = timeRange > 0 
+            ? ((event.timestamp - startTime) / timeRange) * timelineWidth 
+            : 50;
+            
+          return (
+            <div 
+              key={event.id || index}
+              className="mb-8 relative"
+              style={{ left: `${position}%` }}
+            >
+              <div 
+                className="absolute w-3 h-3 rounded-full bg-cyber-blue top-3 -ml-1.5"
+                style={{ left: `0%` }}
+              ></div>
+              <div className="pl-4 pt-2">
+                <div className="text-xs text-cyber-text/70 mb-1">
+                  {formatDateTime(event.timestamp)}
+                </div>
+                <div className="flex items-center text-sm text-cyber-text">
+                  <span className="mr-2 text-cyber-blue">{getIconComponent(event.event_type)}</span>
+                  <span>{event.event_type}</span>
+                </div>
+                <div className="text-xs text-cyber-text/70 mt-1">
+                  {event.user && <div><span className="opacity-70">User:</span> {event.user}</div>}
+                  {event.process_name && <div><span className="opacity-70">Process:</span> {event.process_name}</div>}
+                  {event.source_ip && <div><span className="opacity-70">From:</span> {event.source_ip}</div>}
+                  {event.destination_ip && <div><span className="opacity-70">To:</span> {event.destination_ip}</div>}
+                  {event.status && (
+                    <div>
+                      <span className="opacity-70">Status:</span>
+                      <span className={`ml-1 ${
+                        event.status === 'success' ? 'text-green-400' :
+                        event.status === 'failure' ? 'text-red-400' : ''
+                      }`}>
+                        {event.status}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div>
       <PageHeader
@@ -382,55 +476,89 @@ const Detections = () => {
         
         {/* Detection Details */}
         <div>
-          <div className="cyber-card h-full">
-            {selectedDetection ? (
-              <div>
-                <h3 className="text-lg font-medium text-cyber-text mb-4">Detection Details</h3>
-                
-                <div className="space-y-4">
-                  <div>
-                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Severity</h4>
-                    <SeverityBadge severity={selectedDetection.severity} />
-                  </div>
-                  
-                  <div>
-                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Timestamp</h4>
-                    <p className="text-cyber-text">{formatDateTime(selectedDetection.timestamp)}</p>
-                  </div>
-                  
-                  <div>
-                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Rule</h4>
-                    <p className="text-cyber-text">{formatRuleId(selectedDetection.rule_id)}</p>
-                  </div>
-                  
-                  <div>
-                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Endpoint</h4>
-                    <p className="text-xs text-cyber-text/90">{selectedDetection.endpoint_id}</p>
-                  </div>
-                  
-                  <div>
-                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Description</h4>
-                    <p className="text-cyber-text">{selectedDetection.description || 'No description available'}</p>
-                  </div>
-                  
-                  {selectedDetection.event_ids && (
-                    <div>
-                      <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Related Events</h4>
-                      <p className="text-xs text-cyber-text break-all font-mono bg-cyber-black/40 p-2 rounded">
-                        {selectedDetection.event_ids}
-                      </p>
-                    </div>
-                  )}
+          {selectedDetection ? (
+            <div className="cyber-card p-4">
+              <h3 className="text-lg font-medium text-cyber-text mb-4">Detection Details</h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Severity</h4>
+                  <SeverityBadge severity={selectedDetection.severity} />
                 </div>
+                
+                <div>
+                  <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Timestamp</h4>
+                  <p className="text-cyber-text">{formatDateTime(selectedDetection.timestamp)}</p>
+                </div>
+                
+                <div>
+                  <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Rule</h4>
+                  <p className="text-cyber-text">{formatRuleId(selectedDetection.rule_id)}</p>
+                </div>
+                
+                <div>
+                  <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Endpoint</h4>
+                  <p className="text-xs text-cyber-text/90">{selectedDetection.endpoint_id}</p>
+                </div>
+                
+                <div>
+                  <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Description</h4>
+                  <p className="text-cyber-text">{selectedDetection.description || 'No description available'}</p>
+                </div>
+                
+                {selectedDetection.events && selectedDetection.events.length > 0 ? (
+                  <div>
+                    <h4 className="text-sm font-medium text-cyber-text/70 mb-3 flex items-center">
+                      <FiClock className="mr-2" />
+                      Event Timeline
+                    </h4>
+                    <EventTimeline events={selectedDetection.events} />
+                    
+                    <div className="mt-6">
+                      <h4 className="text-sm font-medium text-cyber-text/70 mb-3">Related Events</h4>
+                      <div className="space-y-3">
+                        {selectedDetection.events.map((event, index) => (
+                          <div key={event.id || index} className="bg-cyber-black/40 rounded p-3">
+                            <div className="flex justify-between mb-2">
+                              <div className="text-sm text-cyber-blue font-medium">{event.event_type}</div>
+                              <div className="text-xs text-cyber-text/70">{formatDateTime(event.timestamp)}</div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div><span className="text-cyber-text/70">User:</span> {event.user || 'N/A'}</div>
+                              <div><span className="text-cyber-text/70">Process:</span> {event.process_name || 'N/A'}</div>
+                              <div><span className="text-cyber-text/70">Status:</span> {event.status || 'N/A'}</div>
+                              <div><span className="text-cyber-text/70">Direction:</span> {event.direction || 'N/A'}</div>
+                              {event.source_ip && <div><span className="text-cyber-text/70">Source IP:</span> {event.source_ip}</div>}
+                              {event.destination_ip && <div><span className="text-cyber-text/70">Destination IP:</span> {event.destination_ip}</div>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : selectedDetection.event_ids ? (
+                  <div>
+                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Event IDs</h4>
+                    <p className="text-xs text-cyber-text break-all font-mono bg-cyber-black/40 p-2 rounded">
+                      {selectedDetection.event_ids}
+                    </p>
+                    <p className="text-xs text-cyber-text/70 mt-2">Unable to load event details</p>
+                  </div>
+                ) : (
+                  <div>
+                    <h4 className="text-sm font-medium text-cyber-text/70 mb-1">Related Events</h4>
+                    <p className="text-cyber-text/70">No related events found</p>
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full py-12">
-                <FiShield size={48} className="text-cyber-gray mb-4" />
-                <h3 className="text-lg font-medium text-cyber-text mb-2">No detection selected</h3>
-                <p className="text-cyber-text/70 text-center">Select a detection from the table to view details</p>
-              </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="cyber-card p-4 flex flex-col items-center justify-center h-full py-12">
+              <FiShield size={48} className="text-cyber-gray mb-4" />
+              <h3 className="text-lg font-medium text-cyber-text mb-2">No detection selected</h3>
+              <p className="text-cyber-text/70 text-center">Select a detection from the table to view details</p>
+            </div>
+          )}
         </div>
       </div>
     </div>
