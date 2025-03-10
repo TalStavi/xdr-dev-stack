@@ -130,11 +130,14 @@ const DataTable = ({
                   transition={{ duration: 0.2, delay: rowIndex * 0.05 }}
                   className={`hover:bg-cyber-light/10 ${
                     onRowClick ? 'cursor-pointer' : ''
-                  }`}
+                  } ${row.isNew ? 'new-event-row' : ''}`}
                   onClick={() => onRowClick && onRowClick(row)}
                 >
                   {columns.map((column) => (
-                    <td key={`${row.id || rowIndex}-${column.key}`} className="px-4 py-3">
+                    <td 
+                      key={`${row.id || rowIndex}-${column.key}`} 
+                      className={`px-4 py-3 ${row.isNew ? 'new-event-cell' : ''}`}
+                    >
                       {column.render ? (
                         column.render(row)
                       ) : column.key.includes('time') || column.key.includes('date') ? (

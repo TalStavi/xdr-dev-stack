@@ -27,7 +27,7 @@ const Events = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [events, setEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLiveMode, setIsLiveMode] = useState(false);
+  const [isLiveMode, setIsLiveMode] = useState(true);
 
   // Get URL params for direct linking
   useEffect(() => {
@@ -68,8 +68,15 @@ const Events = () => {
       unsubscribe = EventsService.subscribeToLiveEvents((liveEvents) => {
         if (liveEvents && liveEvents.length > 0) {
           setEvents(prevEvents => {
+            // Mark new events with isNew flag and timestamp for animation
+            const newEventsWithFlag = liveEvents.map(event => ({
+              ...event,
+              isNew: true,
+              newTimestamp: Date.now()
+            }));
+            
             // Combine new events with existing ones and remove duplicates
-            const combinedEvents = [...liveEvents, ...prevEvents];
+            const combinedEvents = [...newEventsWithFlag, ...prevEvents];
             return Array.from(new Map(combinedEvents.map(event => [event.id, event])).values());
           });
         }
@@ -82,6 +89,27 @@ const Events = () => {
       }
     };
   }, [isLiveMode]);
+
+  // Clear "new" flag after animation time
+  useEffect(() => {
+    const clearNewFlags = () => {
+      if (events.some(e => e.isNew)) {
+        setEvents(prevEvents => 
+          prevEvents.map(event => {
+            // Remove isNew flag after 4 seconds
+            if (event.isNew && Date.now() - event.newTimestamp > 4000) {
+              const { isNew, newTimestamp, ...rest } = event;
+              return rest;
+            }
+            return event;
+          })
+        );
+      }
+    };
+
+    const interval = setInterval(clearNewFlags, 1000);
+    return () => clearInterval(interval);
+  }, [events]);
 
   // Handle filter changes
   const handleFilterChange = (e) => {
@@ -225,7 +253,7 @@ const Events = () => {
               title={isLiveMode ? 'Disable live updates' : 'Enable live updates'}
             >
               <FiRefreshCw size={16} className={isLiveMode ? 'animate-spin' : ''} />
-              <span className="ml-1">{isLiveMode ? 'Live' : 'Live'}</span>
+              <span className="ml-1">{isLiveMode ? 'Live Mode On' : 'Live Mode Off'}</span>
             </button>
             <button 
               onClick={refreshData}

@@ -40,6 +40,15 @@
     rounded px-4 py-2 font-semibold transition-all duration-300 hover:shadow-neon-blue;
   }
 
+  .cyber-button-sm {
+    @apply bg-cyber-dark border border-cyber-light hover:border-cyber-blue text-cyber-text 
+    rounded px-3 py-1 font-semibold transition-all duration-300 hover:shadow-neon-blue text-sm flex items-center;
+  }
+
+  .cyber-button-active {
+    @apply border-cyber-blue text-cyber-blue shadow-neon-blue;
+  }
+
   .cyber-input {
     @apply bg-cyber-gray border border-cyber-light rounded-md px-4 py-2 
     focus:outline-none focus:ring-1 focus:ring-cyber-blue focus:border-cyber-blue;
@@ -76,5 +85,46 @@
   }
   62% {
     transform: translate(0, 0) skew(5deg);
+  }
+}
+
+/* New Event Glow Effect */
+.new-event-row {
+  animation: pulse-row 4s ease-out forwards;
+  position: relative;
+  z-index: 10;
+}
+
+.new-event-cell {
+  animation: glow-text 4s ease-out forwards;
+}
+
+@keyframes pulse-row {
+  0% {
+    background-color: rgba(0, 112, 243, 0.3);
+    box-shadow: 0 0 20px rgba(0, 112, 243, 0.5), 0 0 30px rgba(0, 112, 243, 0.3);
+  }
+  30% {
+    background-color: rgba(0, 112, 243, 0.2);
+    box-shadow: 0 0 15px rgba(0, 112, 243, 0.4), 0 0 20px rgba(0, 112, 243, 0.2);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+@keyframes glow-text {
+  0% {
+    color: #5ddefb;
+    text-shadow: 0 0 8px rgba(93, 222, 251, 0.8);
+  }
+  30% {
+    color: #5ddefb;
+    text-shadow: 0 0 5px rgba(93, 222, 251, 0.5);
+  }
+  100% {
+    color: inherit;
+    text-shadow: none;
   }
 } 

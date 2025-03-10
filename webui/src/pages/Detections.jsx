@@ -24,7 +24,7 @@ const Detections = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [detections, setDetections] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLiveMode, setIsLiveMode] = useState(false);
+  const [isLiveMode, setIsLiveMode] = useState(true);
 
   // Get URL params for direct linking
   useEffect(() => {
@@ -65,8 +65,15 @@ const Detections = () => {
       unsubscribe = DetectionsService.subscribeToLiveDetections((liveDetections) => {
         if (liveDetections && liveDetections.length > 0) {
           setDetections(prevDetections => {
+            // Mark new detections with isNew flag and timestamp for animation
+            const newDetectionsWithFlag = liveDetections.map(detection => ({
+              ...detection,
+              isNew: true,
+              newTimestamp: Date.now()
+            }));
+            
             // Combine new detections with existing ones and remove duplicates
-            const combinedDetections = [...liveDetections, ...prevDetections];
+            const combinedDetections = [...newDetectionsWithFlag, ...prevDetections];
             return Array.from(new Map(combinedDetections.map(detection => [detection.id, detection])).values());
           });
         }
@@ -79,6 +86,27 @@ const Detections = () => {
       }
     };
   }, [isLiveMode]);
+
+  // Clear "new" flag after animation time
+  useEffect(() => {
+    const clearNewFlags = () => {
+      if (detections.some(d => d.isNew)) {
+        setDetections(prevDetections => 
+          prevDetections.map(detection => {
+            // Remove isNew flag after 4 seconds
+            if (detection.isNew && Date.now() - detection.newTimestamp > 4000) {
+              const { isNew, newTimestamp, ...rest } = detection;
+              return rest;
+            }
+            return detection;
+          })
+        );
+      }
+    };
+
+    const interval = setInterval(clearNewFlags, 1000);
+    return () => clearInterval(interval);
+  }, [detections]);
 
   // Handle filter changes
   const handleFilterChange = (e) => {
@@ -214,7 +242,7 @@ const Detections = () => {
               title={isLiveMode ? 'Disable live updates' : 'Enable live updates'}
             >
               <FiRefreshCw size={16} className={isLiveMode ? 'animate-spin' : ''} />
-              <span className="ml-1">{isLiveMode ? 'Live' : 'Live'}</span>
+              <span className="ml-1">{isLiveMode ? 'Live Mode On' : 'Live Mode Off'}</span>
             </button>
             <button 
               onClick={refreshData}
