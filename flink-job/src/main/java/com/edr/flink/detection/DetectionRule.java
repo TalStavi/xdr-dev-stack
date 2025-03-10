@@ -4,7 +4,6 @@ import com.edr.flink.model.Detection;
 import com.edr.flink.model.Event;
 import org.apache.flink.cep.PatternSelectFunction;
 import org.apache.flink.cep.pattern.Pattern;
-import org.apache.flink.streaming.api.datastream.DataStream;
 
 /**
  * Interface for detection rules
