@@ -102,7 +102,7 @@ io.on('connection', (socket) => {
       } catch (error) {
         console.error('Error fetching live events:', error);
       }
-    }, 5000); // Poll every 5 seconds
+    }, 1000); // Poll every 1 second
     
     // Store the interval ID in the socket object for cleanup
     socket.eventsPollInterval = eventsPollInterval;
@@ -232,7 +232,7 @@ io.on('connection', (socket) => {
       } catch (error) {
         console.error('Error fetching live detections:', error);
       }
-    }, 5000); // Poll every 5 seconds
+    }, 1000); // Poll every 1 seconds
     
     // Store the interval ID in the socket object for cleanup
     socket.detectionsPollInterval = detectionsPollInterval;

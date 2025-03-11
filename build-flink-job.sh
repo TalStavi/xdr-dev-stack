@@ -6,6 +6,7 @@
 # - Check for existing jobs before submitting
 # - Add command line options
 # - Improve error handling
+# - Use savepoints for stateful job updates
 
 set -e
 
@@ -13,6 +14,7 @@ set -e
 FORCE_REBUILD=false
 SKIP_DEPLOY=false
 VERBOSE=false
+SAVEPOINT_DIR="/opt/flink/savepoints"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -55,6 +57,17 @@ log() {
 log_verbose() {
   if [[ "$VERBOSE" == "true" ]]; then
     log "$1"
+  fi
+}
+
+# Ensure required directories exist
+ensure_directories() {
+  log_verbose "Ensuring required directories exist..."
+  mkdir -p volumes/flink-savepoints
+  # Ensure the directory has correct permissions inside the container
+  if docker ps | grep edr-flink-jobmanager > /dev/null; then
+    docker exec edr-flink-jobmanager mkdir -p $SAVEPOINT_DIR
+    docker exec edr-flink-jobmanager chmod 777 $SAVEPOINT_DIR
   fi
 }
 
@@ -105,32 +118,58 @@ build_job() {
   log "Build completed successfully"
 }
 
-# Function to check and stop existing jobs
+# Function to check and stop existing jobs with savepoint
 check_and_stop_existing_jobs() {
   log "Checking for existing jobs..."
   local JOB_OUTPUT=$(docker exec edr-flink-jobmanager flink list -r 2>/dev/null)
   
   if echo "$JOB_OUTPUT" | grep -q "EDR Processing and Detection"; then
-    log "Found existing EDR Processing job. Cancelling before deploying new version..."
+    log "Found existing EDR Processing job. Creating savepoint before stopping..."
     
     # Extract job ID - this assumes the job name is unique
     local JOB_ID=$(echo "$JOB_OUTPUT" | grep "EDR Processing and Detection" | awk '{print $4}')
     
     if [[ -n "$JOB_ID" ]]; then
-      log "Cancelling job with ID $JOB_ID"
-      docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
+      # Ensure savepoint directory exists
+      docker exec edr-flink-jobmanager mkdir -p $SAVEPOINT_DIR
+      docker exec edr-flink-jobmanager chmod 777 $SAVEPOINT_DIR
       
-      # Wait for job to be fully cancelled
-      for i in {1..10}; do
-        if ! docker exec edr-flink-jobmanager flink list -r 2>/dev/null | grep -q "$JOB_ID"; then
-          log "Job cancelled successfully"
-          return 0
-        fi
-        log_verbose "Waiting for job to be cancelled... attempt $i"
-        sleep 2
-      done
+      # Create a savepoint
+      log "Creating savepoint for job $JOB_ID"
+      local SAVEPOINT_OUTPUT=$(docker exec edr-flink-jobmanager flink savepoint $JOB_ID $SAVEPOINT_DIR 2>&1)
+      local SAVEPOINT_EXIT_CODE=$?
       
-      log "Warning: Job cancellation may not have completed. Proceeding anyway..."
+      if [[ "$VERBOSE" == "true" ]]; then
+        log "Savepoint command output: $SAVEPOINT_OUTPUT"
+      fi
+      
+      # Extract savepoint path from output
+      local SAVEPOINT_PATH=$(echo "$SAVEPOINT_OUTPUT" | grep -o "$SAVEPOINT_DIR/savepoint-[0-9a-f-]\+")
+      
+      if [[ $SAVEPOINT_EXIT_CODE -ne 0 ]]; then
+        log "Error: Savepoint command failed with exit code $SAVEPOINT_EXIT_CODE. Falling back to cancel."
+        docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
+        # Wait for job to be fully cancelled
+        wait_for_job_termination "$JOB_ID" "cancelled"
+      elif [[ -n "$SAVEPOINT_PATH" ]]; then
+        log "Savepoint created at $SAVEPOINT_PATH"
+        
+        # Store the savepoint path for later use
+        echo "$SAVEPOINT_PATH" > .last_savepoint_path
+        
+        # Stop the job after savepoint is created
+        log "Stopping job with ID $JOB_ID"
+        docker exec edr-flink-jobmanager flink stop --savepointPath $SAVEPOINT_PATH $JOB_ID
+        
+        # Wait for job to be fully stopped
+        wait_for_job_termination "$JOB_ID" "stopped with savepoint"
+      else
+        log "Error: Failed to create savepoint (no path found). Output: $SAVEPOINT_OUTPUT. Falling back to cancel."
+        docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
+        
+        # Wait for job to be fully cancelled
+        wait_for_job_termination "$JOB_ID" "cancelled"
+      fi
     else
       log "Error: Could not extract job ID from listing. Please check manually."
       return 1
@@ -138,6 +177,22 @@ check_and_stop_existing_jobs() {
   else
     log_verbose "No existing EDR Processing job found"
   fi
+}
+
+# Helper function to wait for job termination
+wait_for_job_termination() {
+  local JOB_ID="$1"
+  local ACTION="$2"
+  for i in {1..10}; do
+    if ! docker exec edr-flink-jobmanager flink list -r 2>/dev/null | grep -q "$JOB_ID"; then
+      log "Job $ACTION successfully"
+      return 0
+    fi
+    log_verbose "Waiting for job to be $ACTION... attempt $i"
+    sleep 2
+  done
+  
+  log "Warning: Job $ACTION may not have completed. Proceeding anyway..."
 }
 
 # Function to deploy the job
@@ -158,14 +213,30 @@ deploy_job() {
   # Stop existing jobs if running
   check_and_stop_existing_jobs
   
-  log "Submitting Flink job..."
+  # Check if we have a savepoint to restore from
+  if [[ -f ".last_savepoint_path" ]]; then
+    local SAVEPOINT_PATH=$(cat .last_savepoint_path)
+    
+    if [[ -n "$SAVEPOINT_PATH" ]]; then
+      log "Submitting Flink job with savepoint restoration from $SAVEPOINT_PATH..."
+      docker exec edr-flink-jobmanager flink run -d -s $SAVEPOINT_PATH /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar
+      log "Flink job deployed successfully with state restored from savepoint"
+      return 0
+    fi
+  fi
+  
+  # If no savepoint available, start without it
+  log "No savepoint available. Submitting Flink job without state restoration..."
   docker exec edr-flink-jobmanager flink run -d /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar
   
-  log "Flink job deployed successfully"
+  log "Flink job deployed successfully (without state restoration)"
 }
 
 # Main execution
 main() {
+  # Ensure required directories exist
+  ensure_directories
+  
   # Check if we need to rebuild
   if check_rebuild_needed; then
     build_job

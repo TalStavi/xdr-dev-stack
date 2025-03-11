@@ -8,6 +8,7 @@ import com.edr.flink.model.Detection;
 import com.edr.flink.model.Event;
 import com.edr.flink.sink.ClickHouseSinkFactory;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.streaming.api.environment.CheckpointConfig.ExternalizedCheckpointCleanup;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -24,7 +25,22 @@ public class EDRProcessingJob {
     public static void main(String[] args) throws Exception {
         // Set up execution environment
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        
+        // Configure checkpointing for reliable state management and savepoint support
         env.enableCheckpointing(10000); // Checkpoint every 10 seconds
+        
+        // Configure checkpointing behavior for better recovery
+        env.getCheckpointConfig().setCheckpointTimeout(60000); // 1 minute timeout
+        env.getCheckpointConfig().setMinPauseBetweenCheckpoints(5000); // Min 5 seconds between checkpoints
+        env.getCheckpointConfig().setMaxConcurrentCheckpoints(1); // Only one checkpoint at a time
+        
+        // Keep externalized checkpoints on job cancellation for potential manual recovery
+        env.getCheckpointConfig().setExternalizedCheckpointCleanup(
+                ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+        
+        // Ensure we can restart from savepoints even with changes to the job
+        env.getCheckpointConfig().setTolerableCheckpointFailureNumber(3); // Allow up to 3 failures
+        
         env.setParallelism(2);
 
         // Create the detection rule registry with all configured rules

@@ -90,10 +90,12 @@ services:
         taskmanager.memory.process.size: 1024m
         state.backend: rocksdb
         state.backend.incremental: true
-        parallelism.default: 2
-        execution.checkpointing.interval: 10000
+        parallelism.default: 4
+        execution.checkpointing.interval: 1000
+        state.savepoints.dir: file:///opt/flink/savepoints
     volumes:
       - ./volumes/flink-checkpoints:/opt/flink/checkpoints
+      - ./volumes/flink-savepoints:/opt/flink/savepoints
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/"]
       interval: 5s
@@ -120,6 +122,7 @@ services:
         taskmanager.memory.process.size: 1024m
     volumes:
       - ./volumes/flink-checkpoints:/opt/flink/checkpoints
+      - ./volumes/flink-savepoints:/opt/flink/savepoints
     networks:
       - edr-network
 
@@ -157,6 +160,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PORT=3000
+      - NODE_ENV=development
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -170,6 +174,7 @@ services:
     volumes:
       - ./api:/app
       - /app/node_modules
+    command: npm run dev
     networks:
       - edr-network
 
