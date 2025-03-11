@@ -1,96 +1,10 @@
-# XDR Development Stack
+# EDR Processing Flink Job
 
-This project provides a complete development environment for an Extended Detection and Response (XDR) system, including data processing, storage, analysis, and visualization components.
+This project is a Flink job that processes endpoint detection and response (EDR) events and identifies suspicious patterns using Flink's Complex Event Processing (CEP) capabilities.
 
-## Architecture Overview
+## Project Structure
 
-The XDR development stack consists of the following components:
-
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│             │    │             │    │             │    │             │
-│    Data     │───►│   Redpanda  │───►│    Flink    │───►│ ClickHouse  │
-│  Generator  │    │  (Kafka)    │    │    Job      │    │  Database   │
-│             │    │             │    │             │    │             │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-                                                               │
-                                                               ▼
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│             │    │             │    │             │    │             │
-│   Web UI    │◄───│     API     │◄───│    Redis    │◄───│   Grafana   │
-│  Dashboard  │    │   Service   │    │    Cache    │    │  Dashboard  │
-│             │    │             │    │             │    │             │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-```
-
-### Components
-
-1. **Message Broker (Redpanda)**: Kafka-compatible message broker for event streaming
-2. **Stream Processing (Flink)**: Apache Flink job for real-time EDR event processing and detection
-3. **Database (ClickHouse)**: Column-oriented database for storing events and detections
-4. **API Service**: Backend API for querying and managing EDR/XDR data
-5. **Web UI**: Frontend dashboard for visualizing and interacting with detections
-6. **Development Dashboard (Grafana)**: Monitoring and analytics dashboards
-7. **Data Generator**: Utility for generating test data
-8. **Redis**: Cache for API responses
-
-## Getting Started
-
-### Prerequisites
-
-- Docker and Docker Compose
-- Maven (for building the Flink job)
-- Git
-
-### Setup and Launch
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/xdr-dev-stack.git
-   cd xdr-dev-stack
-   ```
-
-2. Start the environment:
-   ```bash
-   ./start.sh
-   ```
-
-3. Build and deploy the Flink job:
-   ```bash
-   ./build-flink-job.sh
-   ```
-
-4. Generate test data:
-   ```bash
-   ./run-generator.sh
-   ```
-
-### Available Services
-
-After startup, the following services are available:
-
-- Redpanda Console: http://localhost:8080
-- Redpanda Admin: http://localhost:8083
-- Flink Dashboard: http://localhost:8081
-- ClickHouse UI: http://localhost:8123/play
-- API Service: http://localhost:3000
-- XDR Web UI: http://localhost:3001
-- Grafana: http://localhost:3002 (admin/admin)
-
-## Usage Guide
-
-### Managing the Environment
-
-- Start the environment: `./start.sh`
-- Stop the environment: `./stop.sh`
-- Reset data: `./clear-data.sh`
-- Full cleanup: `./clean.sh`
-
-### Flink Job Development
-
-The Flink job processes EDR events and identifies suspicious patterns using Flink's Complex Event Processing (CEP) capabilities.
-
-#### Project Structure
+The project has been organized into the following packages:
 
 ```
 com.edr.flink
@@ -115,20 +29,7 @@ com.edr.flink
     └── ClickHouseSinkFactory.java  # Factory for ClickHouse database sinks
 ```
 
-#### Building and Deploying
-
-The Flink job can be built and deployed using the provided script:
-
-```bash
-./build-flink-job.sh [options]
-```
-
-Options:
-- `--force-rebuild`: Force rebuild even if no changes detected
-- `--skip-deploy`: Build only, don't deploy to Flink
-- `--verbose`: Show more detailed output
-
-#### Adding New Detection Rules
+## Adding New Detection Rules
 
 To add a new detection rule:
 
@@ -205,14 +106,16 @@ public static DetectionRuleRegistry createDefault() {
 }
 ```
 
-### Working with Test Data
+## Running the Job
 
-Use the data generator to create test events:
+Build the project with Maven:
 
-```bash
-./run-generator.sh [options]
+```
+mvn clean package
 ```
 
-## Troubleshooting
+Submit the job to a Flink cluster:
 
-For common issues and solutions, see the [TROUBLESHOOTING.md](../TROUBLESHOOTING.md) file. 
+```
+flink run -c com.edr.flink.EDRProcessingJob target/flink-job-1.0.0.jar
+``` 
