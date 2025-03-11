@@ -14,6 +14,8 @@ set -e
 FORCE_REBUILD=false
 SKIP_DEPLOY=false
 VERBOSE=false
+IGNORE_SAVEPOINTS=false
+CLEAR_SAVEPOINTS=false
 SAVEPOINT_DIR="/opt/flink/savepoints"
 
 # Parse command line arguments
@@ -31,13 +33,23 @@ while [[ $# -gt 0 ]]; do
       VERBOSE=true
       shift
       ;;
+    --ignore-savepoints)
+      IGNORE_SAVEPOINTS=true
+      shift
+      ;;
+    --clear-savepoints)
+      CLEAR_SAVEPOINTS=true
+      shift
+      ;;
     --help)
       echo "Usage: $0 [options]"
       echo "Options:"
-      echo "  --force-rebuild   Force rebuild even if no changes detected"
-      echo "  --skip-deploy     Build only, don't deploy to Flink"
-      echo "  --verbose         Show more detailed output"
-      echo "  --help            Show this help message"
+      echo "  --force-rebuild     Force rebuild even if no changes detected"
+      echo "  --skip-deploy       Build only, don't deploy to Flink"
+      echo "  --verbose           Show more detailed output"
+      echo "  --ignore-savepoints Don't use or create savepoints (use with caution)"
+      echo "  --clear-savepoints  Delete any saved savepoint references" 
+      echo "  --help              Show this help message"
       exit 0
       ;;
     *)
@@ -63,11 +75,26 @@ log_verbose() {
 # Ensure required directories exist
 ensure_directories() {
   log_verbose "Ensuring required directories exist..."
+  
+  # Create the savepoint directory on the host
   mkdir -p volumes/flink-savepoints
+  
   # Ensure the directory has correct permissions inside the container
   if docker ps | grep edr-flink-jobmanager > /dev/null; then
+    # Make sure savepoint directory exists in the container
     docker exec edr-flink-jobmanager mkdir -p $SAVEPOINT_DIR
+    
+    # Ensure proper permissions for saving and reading savepoints
     docker exec edr-flink-jobmanager chmod 777 $SAVEPOINT_DIR
+    
+    # Verify the directories
+    log_verbose "Verifying savepoint directory in container..."
+    if ! docker exec edr-flink-jobmanager bash -c "[ -d '$SAVEPOINT_DIR' ] && [ -w '$SAVEPOINT_DIR' ]"; then
+      log "Warning: Savepoint directory $SAVEPOINT_DIR in container is not properly configured."
+      log "         This may cause issues with savepoint creation or restoration."
+    else
+      log_verbose "Savepoint directory $SAVEPOINT_DIR is properly configured in container."
+    fi
   fi
 }
 
@@ -112,9 +139,63 @@ check_rebuild_needed() {
 # Function to build the Flink job
 build_job() {
   log "Building Flink job..."
-  cd flink-job
-  mvn clean package
-  cd ..
+  
+  # Check if Maven is installed
+  if ! command -v mvn &> /dev/null; then
+    log "Error: Maven is not installed or not in PATH. Please install Maven to build the Flink job."
+    exit 1
+  fi
+  
+  # Check if flink-job directory exists
+  if [ ! -d "flink-job" ]; then
+    log "Error: flink-job directory not found. Make sure you're running this script from the correct location."
+    exit 1
+  fi
+  
+  # Save current directory to return to it later
+  local CURRENT_DIR=$(pwd)
+  
+  # Enter the flink-job directory
+  cd flink-job || { log "Error: Failed to change to flink-job directory"; exit 1; }
+  
+  # Check for pom.xml
+  if [ ! -f "pom.xml" ]; then
+    log "Error: pom.xml not found in flink-job directory. Cannot build project."
+    cd "$CURRENT_DIR"
+    exit 1
+  fi
+  
+  log_verbose "Running Maven build..."
+  
+  # Run Maven with more detailed output capture
+  local MVN_OUTPUT
+  MVN_OUTPUT=$(mvn clean package 2>&1)
+  local MVN_EXIT_CODE=$?
+  
+  # Return to original directory
+  cd "$CURRENT_DIR"
+  
+  if [ $MVN_EXIT_CODE -ne 0 ]; then
+    log "Error: Maven build failed with exit code $MVN_EXIT_CODE"
+    log "Maven output:"
+    echo "$MVN_OUTPUT" | tail -n 20
+    
+    # Check for common errors
+    if echo "$MVN_OUTPUT" | grep -q "Could not resolve dependencies"; then
+      log "It appears there might be dependency resolution issues. Check your internet connection or Maven repository settings."
+    elif echo "$MVN_OUTPUT" | grep -q "Compilation failure"; then
+      log "There are compilation errors in your code. Please fix them and try again."
+    fi
+    
+    exit 1
+  fi
+  
+  # Verify the JAR was created
+  if [ ! -f "flink-job/target/edr-flink-1.0-SNAPSHOT.jar" ]; then
+    log "Error: Build completed but JAR file was not created. Check Maven configuration."
+    exit 1
+  fi
+  
   log "Build completed successfully"
 }
 
@@ -130,12 +211,28 @@ check_and_stop_existing_jobs() {
     local JOB_ID=$(echo "$JOB_OUTPUT" | grep "EDR Processing and Detection" | awk '{print $4}')
     
     if [[ -n "$JOB_ID" ]]; then
+      # If we're ignoring savepoints, just cancel the job
+      if [[ "$IGNORE_SAVEPOINTS" == "true" ]]; then
+        log "Savepoints are disabled. Cancelling job without savepoint..."
+        docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
+        wait_for_job_termination "$JOB_ID" "cancelled"
+        return 0
+      fi
+      
       # Ensure savepoint directory exists
       docker exec edr-flink-jobmanager mkdir -p $SAVEPOINT_DIR
       docker exec edr-flink-jobmanager chmod 777 $SAVEPOINT_DIR
       
       # Create a savepoint
       log "Creating savepoint for job $JOB_ID"
+      
+      # Ensure the savepoint directory exists and is writable
+      if ! docker exec edr-flink-jobmanager bash -c "[ -d '$SAVEPOINT_DIR' ] && [ -w '$SAVEPOINT_DIR' ]"; then
+        log "Recreating savepoint directory with proper permissions..."
+        docker exec edr-flink-jobmanager mkdir -p $SAVEPOINT_DIR
+        docker exec edr-flink-jobmanager chmod 777 $SAVEPOINT_DIR
+      fi
+      
       local SAVEPOINT_OUTPUT=$(docker exec edr-flink-jobmanager flink savepoint $JOB_ID $SAVEPOINT_DIR 2>&1)
       local SAVEPOINT_EXIT_CODE=$?
       
@@ -154,15 +251,22 @@ check_and_stop_existing_jobs() {
       elif [[ -n "$SAVEPOINT_PATH" ]]; then
         log "Savepoint created at $SAVEPOINT_PATH"
         
-        # Store the savepoint path for later use
-        echo "$SAVEPOINT_PATH" > .last_savepoint_path
-        
-        # Stop the job after savepoint is created
-        log "Stopping job with ID $JOB_ID"
-        docker exec edr-flink-jobmanager flink stop --savepointPath $SAVEPOINT_PATH $JOB_ID
-        
-        # Wait for job to be fully stopped
-        wait_for_job_termination "$JOB_ID" "stopped with savepoint"
+        # Verify the savepoint actually exists
+        if docker exec edr-flink-jobmanager bash -c "[ -e '$SAVEPOINT_PATH' ]"; then
+          # Store the savepoint path for later use
+          echo "$SAVEPOINT_PATH" > .last_savepoint_path
+          
+          # Stop the job after savepoint is created
+          log "Stopping job with ID $JOB_ID"
+          docker exec edr-flink-jobmanager flink stop --savepointPath $SAVEPOINT_PATH $JOB_ID
+          
+          # Wait for job to be fully stopped
+          wait_for_job_termination "$JOB_ID" "stopped with savepoint"
+        else
+          log "Error: Savepoint was reportedly created but does not exist at '$SAVEPOINT_PATH'. Falling back to cancel."
+          docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
+          wait_for_job_termination "$JOB_ID" "cancelled"
+        fi
       else
         log "Error: Failed to create savepoint (no path found). Output: $SAVEPOINT_OUTPUT. Falling back to cancel."
         docker exec edr-flink-jobmanager flink cancel "$JOB_ID"
@@ -202,38 +306,95 @@ deploy_job() {
     return 0
   fi
   
+  # Verify the JAR exists before proceeding
+  if [ ! -f "flink-job/target/edr-flink-1.0-SNAPSHOT.jar" ]; then
+    log "Error: JAR file not found at flink-job/target/edr-flink-1.0-SNAPSHOT.jar. Build may have failed."
+    exit 1
+  fi
+  
+  # Check if Docker is running
+  if ! command -v docker &> /dev/null; then
+    log "Error: Docker command not found. Please install Docker to deploy the Flink job."
+    exit 1
+  fi
+  
+  # Verify Docker is running
+  if ! docker info &> /dev/null; then
+    log "Error: Docker is not running or you don't have sufficient permissions. Start Docker and try again."
+    exit 1
+  fi
+  
   check_jobmanager
   
+  # Verify JobManager container is accessible
+  if ! docker exec edr-flink-jobmanager echo "Container access test" &> /dev/null; then
+    log "Error: Cannot access edr-flink-jobmanager container. The container may be unhealthy."
+    exit 1
+  fi
+  
   log "Creating target directory..."
-  docker exec edr-flink-jobmanager mkdir -p /opt/flink/usrlib/
+  if ! docker exec edr-flink-jobmanager mkdir -p /opt/flink/usrlib/ &> /dev/null; then
+    log "Error: Failed to create directory in JobManager container. Check container permissions."
+    exit 1
+  fi
   
   log "Copying Flink job to JobManager..."
-  docker cp flink-job/target/edr-flink-1.0-SNAPSHOT.jar edr-flink-jobmanager:/opt/flink/usrlib/
+  if ! docker cp flink-job/target/edr-flink-1.0-SNAPSHOT.jar edr-flink-jobmanager:/opt/flink/usrlib/ &> /dev/null; then
+    log "Error: Failed to copy JAR file to JobManager container. Check file permissions and container status."
+    exit 1
+  fi
   
   # Stop existing jobs if running
   check_and_stop_existing_jobs
   
-  # Check if we have a savepoint to restore from
-  if [[ -f ".last_savepoint_path" ]]; then
+  # Check if we have a savepoint to restore from (unless we're ignoring savepoints)
+  if [[ "$IGNORE_SAVEPOINTS" == "false" ]] && [[ -f ".last_savepoint_path" ]]; then
     local SAVEPOINT_PATH=$(cat .last_savepoint_path)
     
     if [[ -n "$SAVEPOINT_PATH" ]]; then
-      log "Submitting Flink job with savepoint restoration from $SAVEPOINT_PATH..."
-      docker exec edr-flink-jobmanager flink run -d -s $SAVEPOINT_PATH /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar
-      log "Flink job deployed successfully with state restored from savepoint"
-      return 0
+      # Verify the savepoint path actually exists in the container
+      log "Verifying savepoint at $SAVEPOINT_PATH..."
+      local SAVEPOINT_EXISTS=$(docker exec edr-flink-jobmanager bash -c "if [ -e '$SAVEPOINT_PATH' ]; then echo 'exists'; else echo 'not_found'; fi")
+      
+      if [[ "$SAVEPOINT_EXISTS" == "exists" ]]; then
+        log "Submitting Flink job with savepoint restoration from $SAVEPOINT_PATH..."
+        if ! docker exec edr-flink-jobmanager flink run -d -s $SAVEPOINT_PATH /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar; then
+          log "Error: Failed to deploy Flink job with savepoint. Check JobManager logs for details."
+          exit 1
+        fi
+        log "Flink job deployed successfully with state restored from savepoint"
+        return 0
+      else
+        log "Warning: Savepoint path $SAVEPOINT_PATH no longer exists. Removing invalid savepoint reference."
+        rm -f .last_savepoint_path
+        log "Will deploy without savepoint instead."
+      fi
     fi
   fi
   
-  # If no savepoint available, start without it
-  log "No savepoint available. Submitting Flink job without state restoration..."
-  docker exec edr-flink-jobmanager flink run -d /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar
+  # If no savepoint available or savepoints are disabled, start without it
+  if [[ "$IGNORE_SAVEPOINTS" == "true" ]]; then
+    log "Savepoints are disabled. Submitting Flink job without state restoration..."
+  else
+    log "No savepoint available. Submitting Flink job without state restoration..."
+  fi
+  
+  if ! docker exec edr-flink-jobmanager flink run -d /opt/flink/usrlib/edr-flink-1.0-SNAPSHOT.jar; then
+    log "Error: Failed to deploy Flink job. Check JobManager logs for details."
+    exit 1
+  fi
   
   log "Flink job deployed successfully (without state restoration)"
 }
 
 # Main execution
 main() {
+  # Check for clear savepoints option
+  if [[ "$CLEAR_SAVEPOINTS" == "true" ]]; then
+    log "Clearing savepoint references as requested..."
+    rm -f .last_savepoint_path
+  fi
+
   # Ensure required directories exist
   ensure_directories
   
