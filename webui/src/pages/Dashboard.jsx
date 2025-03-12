@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery } from 'react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { FiActivity, FiShield, FiServer, FiUsers, FiClock, FiAlertTriangle } from 'react-icons/fi';
@@ -22,7 +21,7 @@ import StatCard from '../components/StatCard';
 import DataTable from '../components/DataTable';
 import SeverityBadge from '../components/SeverityBadge';
 
-import { DashboardService, EventsService, DetectionsService } from '../utils/api';
+import { DashboardService } from '../utils/api';
 import { formatTimeAgo } from '../utils/helpers';
 
 // Register Chart.js components
@@ -41,75 +40,48 @@ ChartJS.register(
 const Dashboard = () => {
   const navigate = useNavigate();
   
-  // State for live data
+  // State for dashboard data
   const [stats, setStats] = useState(null);
-  const [recentEvents, setRecentEvents] = useState([]);
-  const [recentDetections, setRecentDetections] = useState([]);
-  const [isLoadingStats, setIsLoadingStats] = useState(true);
-  const [isLoadingEvents, setIsLoadingEvents] = useState(true);
-  const [isLoadingDetections, setIsLoadingDetections] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
   
-  // Fetch initial data
+  // Fetch dashboard data
   useEffect(() => {
-    const fetchInitialData = async () => {
+    const fetchDashboardData = async () => {
       try {
+        setIsLoading(true);
+        setFetchError(null);
+        
+        // Get all dashboard data in a single fetch
         const statsData = await DashboardService.getStats();
         setStats(statsData);
-        setIsLoadingStats(false);
-        
-        const eventsData = await EventsService.getEvents({ limit: 5 });
-        setRecentEvents(eventsData);
-        setIsLoadingEvents(false);
-        
-        const detectionsData = await DetectionsService.getDetections({ limit: 5 });
-        setRecentDetections(detectionsData);
-        setIsLoadingDetections(false);
       } catch (error) {
-        console.error('Error fetching initial data:', error);
+        console.error('Error fetching dashboard data:', error);
+        setFetchError(error.message || 'Failed to load dashboard data');
+      } finally {
+        setIsLoading(false);
       }
     };
     
-    fetchInitialData();
+    fetchDashboardData();
   }, []);
   
   // Subscribe to live updates
   useEffect(() => {
     // Subscribe to live dashboard stats
     const unsubscribeStats = DashboardService.subscribeToLiveStats((liveStats) => {
-      setStats(liveStats);
-    });
-    
-    // Subscribe to live events
-    const unsubscribeEvents = EventsService.subscribeToLiveEvents((liveEvents) => {
-      // Only update if we have new events
-      if (liveEvents && liveEvents.length > 0) {
-        setRecentEvents(prevEvents => {
-          // Combine new events with existing ones, remove duplicates, and take the first 5
-          const combinedEvents = [...liveEvents, ...prevEvents];
-          const uniqueEvents = Array.from(new Map(combinedEvents.map(event => [event.id, event])).values());
-          return uniqueEvents.slice(0, 5);
-        });
-      }
-    });
-    
-    // Subscribe to live detections
-    const unsubscribeDetections = DetectionsService.subscribeToLiveDetections((liveDetections) => {
-      // Only update if we have new detections
-      if (liveDetections && liveDetections.length > 0) {
-        setRecentDetections(prevDetections => {
-          // Combine new detections with existing ones, remove duplicates, and take the first 5
-          const combinedDetections = [...liveDetections, ...prevDetections];
-          const uniqueDetections = Array.from(new Map(combinedDetections.map(detection => [detection.id, detection])).values());
-          return uniqueDetections.slice(0, 5);
-        });
-      }
+      setStats(prevStats => {
+        // Only update if we have valid data
+        if (liveStats && typeof liveStats === 'object') {
+          return liveStats;
+        }
+        return prevStats;
+      });
     });
     
     // Clean up subscriptions on unmount
     return () => {
       unsubscribeStats();
-      unsubscribeEvents();
-      unsubscribeDetections();
     };
   }, []);
 
@@ -156,7 +128,14 @@ const Dashboard = () => {
   
   // Event columns
   const eventColumns = [
-    { key: 'timestamp', label: 'Time', sortable: true },
+    { 
+      key: 'timestamp', 
+      label: 'Time', 
+      sortable: true,
+      render: (row) => (
+        <div className="text-sm text-cyber-text">{formatTimeAgo(row.timestamp)}</div>
+      ),
+    },
     { 
       key: 'event_type', 
       label: 'Type', 
@@ -185,7 +164,14 @@ const Dashboard = () => {
   
   // Detection columns
   const detectionColumns = [
-    { key: 'timestamp', label: 'Time', sortable: true },
+    { 
+      key: 'timestamp', 
+      label: 'Time', 
+      sortable: true,
+      render: (row) => (
+        <div className="text-sm text-cyber-text">{formatTimeAgo(row.timestamp)}</div>
+      ),
+    },
     {
       key: 'severity',
       label: 'Severity',
@@ -206,6 +192,41 @@ const Dashboard = () => {
     },
   ];
 
+  // Calculate active endpoints count from the activeEndpoints array in stats
+  const activeEndpointsCount = stats?.activeEndpoints?.length || 0;
+  
+  // Calculate active users count from the activeUsers array in stats
+  const activeUsersCount = stats?.activeUsers?.length || 0;
+
+  // Show error message if fetch failed
+  if (fetchError && !isLoading) {
+    return (
+      <div className="p-6">
+        <PageHeader
+          title="Security Dashboard"
+          icon={<FiActivity size={24} />}
+          description="Real-time monitoring of security events and detections"
+        />
+        <div className="cyber-card p-8 text-center">
+          <FiAlertTriangle size={48} className="mx-auto mb-4 text-cyber-red" />
+          <h3 className="text-xl text-cyber-red mb-2">Failed to load dashboard data</h3>
+          <p className="text-cyber-text/70 mb-4">{fetchError}</p>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="cyber-button"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Display last update time if available
+  const lastUpdated = stats?.lastUpdated 
+    ? formatTimeAgo(stats.lastUpdated)
+    : 'Never';
+
   return (
     <div>
       <PageHeader
@@ -214,17 +235,24 @@ const Dashboard = () => {
         description="Real-time monitoring of security events and detections"
       />
       
+      {/* Last Updated */}
+      <div className="mb-6 text-right text-sm text-cyber-text/70">
+        <span className="inline-flex items-center">
+          <FiClock className="mr-1" /> Last updated: {lastUpdated}
+        </span>
+      </div>
+      
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard 
           title="Events (24h)"
-          value={stats?.eventCount?.toLocaleString() || '0'} 
+          value={isLoading ? '...' : (stats?.eventCount?.toLocaleString() || '0')} 
           icon={<FiActivity size={20} />}
           link="/events"
         />
         <StatCard 
           title="Detections (24h)"
-          value={stats?.detectionCount?.toLocaleString() || '0'}
+          value={isLoading ? '...' : (stats?.detectionCount?.toLocaleString() || '0')}
           icon={<FiShield size={20} />}
           color="cyber-red"
           glowing={stats?.detectionCount > 0}
@@ -232,14 +260,14 @@ const Dashboard = () => {
         />
         <StatCard 
           title="Active Endpoints"
-          value="25" // placeholder value
+          value={isLoading ? '...' : activeEndpointsCount.toLocaleString()}
           icon={<FiServer size={20} />}
           color="cyber-purple"
           link="/endpoints"
         />
         <StatCard 
           title="Active Users"
-          value="12" // placeholder value
+          value={isLoading ? '...' : activeUsersCount.toLocaleString()}
           icon={<FiUsers size={20} />}
           color="cyber-green"
           link="/users"
@@ -256,7 +284,17 @@ const Dashboard = () => {
         >
           <h3 className="text-lg font-medium text-cyber-text mb-4">Detection Severity</h3>
           <div className="h-64">
-            <Doughnut data={severityChartData} options={chartOptions} />
+            {isLoading ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-cyber-text/50">Loading severity data...</div>
+              </div>
+            ) : !stats?.severityDistribution || stats.severityDistribution.length === 0 ? (
+              <div className="h-full flex items-center justify-center">
+                <div className="text-cyber-text/50">No severity data available</div>
+              </div>
+            ) : (
+              <Doughnut data={severityChartData} options={chartOptions} />
+            )}
           </div>
         </motion.div>
         
@@ -268,14 +306,14 @@ const Dashboard = () => {
         >
           <h3 className="text-lg font-medium text-cyber-text mb-4">Event Type Distribution</h3>
           <div className="space-y-4">
-            {isLoadingStats ? (
+            {isLoading ? (
               <div className="space-y-2">
                 {[1, 2, 3, 4].map((i) => (
                   <div key={i} className="w-full h-8 bg-cyber-light/20 rounded animate-pulse"></div>
                 ))}
               </div>
-            ) : (
-              stats?.eventTypeDistribution?.map((item, index) => (
+            ) : stats?.eventTypeDistribution && stats.eventTypeDistribution.length > 0 ? (
+              stats.eventTypeDistribution.map((item, index) => (
                 <div key={index} className="space-y-1">
                   <div className="flex justify-between text-sm">
                     <span className="text-cyber-text">{item.event_type}</span>
@@ -291,6 +329,8 @@ const Dashboard = () => {
                   </div>
                 </div>
               ))
+            ) : (
+              <div className="text-cyber-text/50">No event type data available</div>
             )}
           </div>
         </motion.div>
@@ -305,8 +345,8 @@ const Dashboard = () => {
           </div>
           <DataTable 
             columns={detectionColumns}
-            data={recentDetections}
-            isLoading={isLoadingDetections}
+            data={stats?.recentDetections || []}
+            isLoading={isLoading}
             onRowClick={(row) => navigate(`/detections/${row.id}`)}
             emptyMessage="No recent detections"
             className="cyber-card"
@@ -320,8 +360,8 @@ const Dashboard = () => {
           </div>
           <DataTable 
             columns={eventColumns}
-            data={recentEvents}
-            isLoading={isLoadingEvents}
+            data={stats?.recentEvents || []}
+            isLoading={isLoading}
             onRowClick={(row) => navigate(`/events/${row.id}`)}
             emptyMessage="No recent events"
             className="cyber-card"

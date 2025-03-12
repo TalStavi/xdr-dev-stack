@@ -34,6 +34,47 @@ const clickhouse = new ClickHouse({
   raw: false,
 });
 
+// Helper function to fetch and add hostnames to events and detections
+async function addHostnamesToItems(events = [], detections = []) {
+  try {
+    if (events.length === 0 && detections.length === 0) return;
+    
+    // Extract all unique endpoint IDs
+    const endpointIds = new Set([
+      ...events.map(event => event.endpoint_id),
+      ...detections.map(detection => detection.endpoint_id)
+    ]);
+    
+    if (endpointIds.size === 0) return;
+    
+    // Fetch hostnames from endpoint table
+    const hostnamesQuery = `
+      SELECT endpoint_id, hostname
+      FROM edr.endpoints
+      WHERE endpoint_id IN (${Array.from(endpointIds).map(id => `'${id}'`).join(',')})
+    `;
+    
+    const hostnamesResult = await clickhouse.query(hostnamesQuery).toPromise();
+    
+    // Create a map of endpoint_id to hostname
+    const hostnameMap = {};
+    hostnamesResult.forEach(item => {
+      hostnameMap[item.endpoint_id] = item.hostname;
+    });
+    
+    // Add hostnames to events and detections
+    events.forEach(event => {
+      event.hostname = hostnameMap[event.endpoint_id] || 'Unknown';
+    });
+    
+    detections.forEach(detection => {
+      detection.hostname = hostnameMap[detection.endpoint_id] || 'Unknown';
+    });
+  } catch (error) {
+    console.error('Error fetching hostnames:', error);
+  }
+}
+
 // Routes - Keep health check endpoint for monitoring
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date() });
@@ -248,76 +289,96 @@ io.on('connection', (socket) => {
   // Handle dashboard stats request
   socket.on('dashboard:stats', async () => {
     try {
-      // Get event count using endpoint_events_mv for better performance
-      const eventCountQuery = `
-        SELECT sum(event_count) as count
-        FROM edr.endpoint_events_mv
-        WHERE toDate(last_seen) >= today() - 1
+      // Use the optimized materialized view instead of multiple queries
+      const query = `
+        SELECT *
+        FROM edr.dashboard_stats_mv
+        ORDER BY snapshot_timestamp DESC
+        LIMIT 1
       `;
-      const eventCountResult = await clickhouse.query(eventCountQuery).toPromise();
       
-      // Get detection count using endpoint_detections_mv for better performance
-      const detectionCountQuery = `
-        SELECT sum(detection_count) as count
-        FROM edr.endpoint_detections_mv
-        WHERE date >= today() - 1
-      `;
-      const detectionCountResult = await clickhouse.query(detectionCountQuery).toPromise();
+      const result = await clickhouse.query(query).toPromise();
       
-      // Get severity distribution from user_detections_mv for better performance
-      const severityQuery = `
-        SELECT severity, sum(detection_count) as count
-        FROM edr.user_detections_mv
-        WHERE date >= today() - 1
-        GROUP BY severity
-        ORDER BY severity
-      `;
-      const severityResult = await clickhouse.query(severityQuery).toPromise();
+      if (result.length === 0) {
+        socket.emit('dashboard:stats:error', { error: 'No dashboard stats available' });
+        return;
+      }
       
-      // Get event type distribution from endpoint_events_mv for better performance
-      const eventTypeQuery = `
-        SELECT event_type, sum(event_count) as count
-        FROM edr.endpoint_events_mv
-        WHERE toDate(last_seen) >= today() - 1
-        GROUP BY event_type
-        ORDER BY count DESC
-        LIMIT 10
-      `;
-      const eventTypeResult = await clickhouse.query(eventTypeQuery).toPromise();
+      const latestStats = result[0];
       
-      // Get top active endpoints
-      const activeEndpointsQuery = `
-        SELECT 
-          endpoint_id,
-          primary_user as user,
-          total_events as event_count
-        FROM edr.endpoint_details_mv
-        WHERE last_seen >= now() - INTERVAL 24 HOUR
-        ORDER BY total_events DESC
-        LIMIT 5
-      `;
-      const activeEndpointsResult = await clickhouse.query(activeEndpointsQuery).toPromise();
+      // Transform the array data into more usable objects
+      const severityDistribution = 
+        latestStats.severity_levels && latestStats.severity_levels.length > 0 
+          ? latestStats.severity_levels.map((severity, index) => ({
+              severity,
+              count: latestStats.severity_counts[index]
+            }))
+          : [];
+          
+      const eventTypeDistribution = 
+        latestStats.event_types && latestStats.event_types.length > 0 
+          ? latestStats.event_types.map((event_type, index) => ({
+              event_type,
+              count: latestStats.event_counts[index]
+            }))
+          : [];
+          
+      const activeEndpoints = 
+        latestStats.active_endpoint_ids && latestStats.active_endpoint_ids.length > 0 
+          ? latestStats.active_endpoint_ids.map((endpoint_id, index) => ({
+              endpoint_id,
+              user: latestStats.active_endpoint_users[index],
+              event_count: latestStats.active_endpoint_counts[index]
+            }))
+          : [];
+          
+      const activeUsers = 
+        latestStats.active_user_names && latestStats.active_user_names.length > 0 
+          ? latestStats.active_user_names.map((user, index) => ({
+              user,
+              event_count: latestStats.active_user_counts[index],
+              unique_endpoints: latestStats.active_user_endpoints[index]
+            }))
+          : [];
+          
+      // Transform recent events
+      const recentEvents = 
+        latestStats.recent_event_ids && latestStats.recent_event_ids.length > 0 
+          ? latestStats.recent_event_ids.map((id, index) => ({
+              id,
+              timestamp: latestStats.recent_event_timestamps[index],
+              endpoint_id: latestStats.recent_event_endpoints[index],
+              event_type: latestStats.recent_event_types[index],
+              user: latestStats.recent_event_users[index]
+            }))
+          : [];
+          
+      // Transform recent detections
+      const recentDetections = 
+        latestStats.recent_detection_ids && latestStats.recent_detection_ids.length > 0 
+          ? latestStats.recent_detection_ids.map((id, index) => ({
+              id,
+              timestamp: latestStats.recent_detection_timestamps[index],
+              endpoint_id: latestStats.recent_detection_endpoints[index],
+              rule_id: latestStats.recent_detection_rules[index],
+              severity: latestStats.recent_detection_severities[index]
+            }))
+          : [];
       
-      // Get top active users
-      const activeUsersQuery = `
-        SELECT 
-          user,
-          total_events as event_count,
-          unique_endpoints
-        FROM edr.user_details_mv
-        WHERE last_seen >= now() - INTERVAL 24 HOUR
-        ORDER BY total_events DESC
-        LIMIT 5
-      `;
-      const activeUsersResult = await clickhouse.query(activeUsersQuery).toPromise();
+      // Get hostnames for endpoints
+      await addHostnamesToItems(recentEvents, recentDetections);
       
+      // Construct the response with the same structure as before
       const stats = {
-        eventCount: eventCountResult[0]?.count || 0,
-        detectionCount: detectionCountResult[0]?.count || 0,
-        severityDistribution: severityResult,
-        eventTypeDistribution: eventTypeResult,
-        activeEndpoints: activeEndpointsResult,
-        activeUsers: activeUsersResult
+        eventCount: latestStats.total_events || 0,
+        detectionCount: latestStats.total_detections || 0,
+        severityDistribution,
+        eventTypeDistribution,
+        activeEndpoints,
+        activeUsers,
+        recentEvents,
+        recentDetections,
+        lastUpdated: latestStats.snapshot_timestamp
       };
       
       socket.emit('dashboard:stats:data', stats);
@@ -332,76 +393,96 @@ io.on('connection', (socket) => {
     // Set up interval to poll for updated stats
     const statsPollInterval = setInterval(async () => {
       try {
-        // Get event count using endpoint_events_mv
-        const eventCountQuery = `
-          SELECT sum(event_count) as count
-          FROM edr.endpoint_events_mv
-          WHERE toDate(last_seen) >= today() - 1
+        // Use the optimized materialized view instead of multiple queries
+        const query = `
+          SELECT *
+          FROM edr.dashboard_stats_mv
+          ORDER BY snapshot_timestamp DESC
+          LIMIT 1
         `;
-        const eventCountResult = await clickhouse.query(eventCountQuery).toPromise();
         
-        // Get detection count using endpoint_detections_mv
-        const detectionCountQuery = `
-          SELECT sum(detection_count) as count
-          FROM edr.endpoint_detections_mv
-          WHERE date >= today() - 1
-        `;
-        const detectionCountResult = await clickhouse.query(detectionCountQuery).toPromise();
+        const result = await clickhouse.query(query).toPromise();
         
-        // Get severity distribution from user_detections_mv
-        const severityQuery = `
-          SELECT severity, sum(detection_count) as count
-          FROM edr.user_detections_mv
-          WHERE date >= today() - 1
-          GROUP BY severity
-          ORDER BY severity
-        `;
-        const severityResult = await clickhouse.query(severityQuery).toPromise();
+        if (result.length === 0) {
+          console.error('No dashboard stats available');
+          return;
+        }
         
-        // Get event type distribution from endpoint_events_mv
-        const eventTypeQuery = `
-          SELECT event_type, sum(event_count) as count
-          FROM edr.endpoint_events_mv
-          WHERE toDate(last_seen) >= today() - 1
-          GROUP BY event_type
-          ORDER BY count DESC
-          LIMIT 10
-        `;
-        const eventTypeResult = await clickhouse.query(eventTypeQuery).toPromise();
+        const latestStats = result[0];
         
-        // Get top active endpoints (new)
-        const activeEndpointsQuery = `
-          SELECT 
-            endpoint_id,
-            primary_user as user,
-            total_events as event_count
-          FROM edr.endpoint_details_mv
-          WHERE last_seen >= now() - INTERVAL 24 HOUR
-          ORDER BY total_events DESC
-          LIMIT 5
-        `;
-        const activeEndpointsResult = await clickhouse.query(activeEndpointsQuery).toPromise();
+        // Transform the array data into more usable objects
+        const severityDistribution = 
+          latestStats.severity_levels && latestStats.severity_levels.length > 0 
+            ? latestStats.severity_levels.map((severity, index) => ({
+                severity,
+                count: latestStats.severity_counts[index]
+              }))
+            : [];
+            
+        const eventTypeDistribution = 
+          latestStats.event_types && latestStats.event_types.length > 0 
+            ? latestStats.event_types.map((event_type, index) => ({
+                event_type,
+                count: latestStats.event_counts[index]
+              }))
+            : [];
+            
+        const activeEndpoints = 
+          latestStats.active_endpoint_ids && latestStats.active_endpoint_ids.length > 0 
+            ? latestStats.active_endpoint_ids.map((endpoint_id, index) => ({
+                endpoint_id,
+                user: latestStats.active_endpoint_users[index],
+                event_count: latestStats.active_endpoint_counts[index]
+              }))
+            : [];
+            
+        const activeUsers = 
+          latestStats.active_user_names && latestStats.active_user_names.length > 0 
+            ? latestStats.active_user_names.map((user, index) => ({
+                user,
+                event_count: latestStats.active_user_counts[index],
+                unique_endpoints: latestStats.active_user_endpoints[index]
+              }))
+            : [];
         
-        // Get top active users (new)
-        const activeUsersQuery = `
-          SELECT 
-            user,
-            total_events as event_count,
-            unique_endpoints
-          FROM edr.user_details_mv
-          WHERE last_seen >= now() - INTERVAL 24 HOUR
-          ORDER BY total_events DESC
-          LIMIT 5
-        `;
-        const activeUsersResult = await clickhouse.query(activeUsersQuery).toPromise();
+        // Transform recent events
+        const recentEvents = 
+          latestStats.recent_event_ids && latestStats.recent_event_ids.length > 0 
+            ? latestStats.recent_event_ids.map((id, index) => ({
+                id,
+                timestamp: latestStats.recent_event_timestamps[index],
+                endpoint_id: latestStats.recent_event_endpoints[index],
+                event_type: latestStats.recent_event_types[index],
+                user: latestStats.recent_event_users[index]
+              }))
+            : [];
+            
+        // Transform recent detections
+        const recentDetections = 
+          latestStats.recent_detection_ids && latestStats.recent_detection_ids.length > 0 
+            ? latestStats.recent_detection_ids.map((id, index) => ({
+                id,
+                timestamp: latestStats.recent_detection_timestamps[index],
+                endpoint_id: latestStats.recent_detection_endpoints[index],
+                rule_id: latestStats.recent_detection_rules[index],
+                severity: latestStats.recent_detection_severities[index]
+              }))
+            : [];
+          
+        // Get hostnames for endpoints
+        await addHostnamesToItems(recentEvents, recentDetections);
         
+        // Construct the response with the same structure as before
         const stats = {
-          eventCount: eventCountResult[0]?.count || 0,
-          detectionCount: detectionCountResult[0]?.count || 0,
-          severityDistribution: severityResult,
-          eventTypeDistribution: eventTypeResult,
-          activeEndpoints: activeEndpointsResult,
-          activeUsers: activeUsersResult
+          eventCount: latestStats.total_events || 0,
+          detectionCount: latestStats.total_detections || 0,
+          severityDistribution,
+          eventTypeDistribution,
+          activeEndpoints,
+          activeUsers,
+          recentEvents,
+          recentDetections,
+          lastUpdated: latestStats.snapshot_timestamp
         };
         
         socket.emit('dashboard:stats:live', stats);

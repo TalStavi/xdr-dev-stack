@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 const socket = io(import.meta.env.VITE_API_URL || 'http://localhost:3000', {
   reconnectionDelayMax: 10000,
   transports: ['websocket'],
+  timeout: 15000,
 });
 
 // Socket connection status
@@ -26,16 +27,23 @@ socket.on('connect_error', (error) => {
 });
 
 // Helper function to emit events with Promise-based response handling
-const emitAsync = (eventName, data) => {
+const emitAsync = (eventName, data, customTimeout = 15000) => {
   return new Promise((resolve, reject) => {
     // Set timeout for response
     const timeout = setTimeout(() => {
+      console.error(`Request timed out for event: ${eventName}`);
       reject(new Error(`Request timed out for event: ${eventName}`));
-    }, 10000);
+    }, customTimeout);
     
     // Listen for response
-    const responseEvent = `${eventName.split(':')[0]}:data`;
-    const errorEvent = `${eventName.split(':')[0]}:error`;
+    // Special handling for dashboard:stats event
+    const responseEvent = eventName === 'dashboard:stats' 
+      ? 'dashboard:stats:data'
+      : `${eventName.split(':')[0]}:data`;
+      
+    const errorEvent = eventName === 'dashboard:stats'
+      ? 'dashboard:stats:error'
+      : `${eventName.split(':')[0]}:error`;
     
     const handleResponse = (response) => {
       clearTimeout(timeout);
@@ -46,6 +54,7 @@ const emitAsync = (eventName, data) => {
     const handleError = (error) => {
       clearTimeout(timeout);
       socket.off(responseEvent, handleResponse);
+      console.error(`Error in ${eventName}:`, error);
       reject(error);
     };
     
@@ -63,7 +72,12 @@ export const SocketService = {
   
   // Events
   getEvents: async (params = {}) => {
-    return await emitAsync('events:get', params);
+    try {
+      return await emitAsync('events:get', params);
+    } catch (error) {
+      console.error('Failed to get events:', error);
+      return [];
+    }
   },
   
   subscribeToLiveEvents: (callback) => {
@@ -78,7 +92,12 @@ export const SocketService = {
   
   // Detections
   getDetections: async (params = {}) => {
-    return await emitAsync('detections:get', params);
+    try {
+      return await emitAsync('detections:get', params);
+    } catch (error) {
+      console.error('Failed to get detections:', error);
+      return [];
+    }
   },
   
   subscribeToLiveDetections: (callback) => {
@@ -93,7 +112,19 @@ export const SocketService = {
   
   // Dashboard
   getDashboardStats: async () => {
-    return await emitAsync('dashboard:stats');
+    try {
+      return await emitAsync('dashboard:stats', null, 20000);
+    } catch (error) {
+      console.error('Failed to get dashboard stats:', error);
+      return {
+        eventCount: 0,
+        detectionCount: 0,
+        severityDistribution: [],
+        eventTypeDistribution: [],
+        activeEndpoints: [],
+        activeUsers: []
+      };
+    }
   },
   
   subscribeToLiveDashboardStats: (callback) => {
@@ -108,20 +139,40 @@ export const SocketService = {
   
   // Endpoints
   getEndpoints: async () => {
-    return await emitAsync('endpoints:get');
+    try {
+      return await emitAsync('endpoints:get');
+    } catch (error) {
+      console.error('Failed to get endpoints:', error);
+      return [];
+    }
   },
   
   getEndpointDetails: async (endpointId) => {
-    return await emitAsync('endpoint:details', endpointId);
+    try {
+      return await emitAsync('endpoint:details', endpointId);
+    } catch (error) {
+      console.error('Failed to get endpoint details:', error);
+      return {};
+    }
   },
   
   // Users
   getUsers: async () => {
-    return await emitAsync('users:get');
+    try {
+      return await emitAsync('users:get');
+    } catch (error) {
+      console.error('Failed to get users:', error);
+      return [];
+    }
   },
   
   getUserDetails: async (username) => {
-    return await emitAsync('user:details', username);
+    try {
+      return await emitAsync('user:details', username);
+    } catch (error) {
+      console.error('Failed to get user details:', error);
+      return {};
+    }
   }
 };
 

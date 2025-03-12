@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 # generate-data.py - Generate test data for the EDR/XDR system
 
+#######################
+# Imports
+#######################
 import json
 import random
 import time
 import uuid
 import argparse
 import sys
+from typing import List, Dict, Any
+
+# Optional Kafka imports
 try:
     from kafka import KafkaProducer, KafkaAdminClient
     from kafka.admin import NewTopic
@@ -15,12 +21,15 @@ except ImportError:
     kafka_available = False
     print("WARNING: kafka-python package not installed. Install it with 'pip install kafka-python'")
 
-# Configuration
+#######################
+# Constants
+#######################
+# Configuration defaults
 DEFAULT_KAFKA_BROKER = "localhost:9092"
 DEFAULT_NUM_ENDPOINTS = 10
-DEFAULT_EVENTS_PER_SECOND = 100
+DEFAULT_EVENTS_PER_SECOND = 500  # Changed from 100 to 500 as requested
 DEFAULT_TEST_DURATION = 60  # seconds
-DEFAULT_TOPIC_NAME = "raw-events"  # Changed to DEFAULT_TOPIC_NAME
+DEFAULT_TOPIC_NAME = "raw-events"
 
 # Event types and properties
 EVENT_TYPES = ["process", "network", "file", "registry", "login", "usb", "dns"]
@@ -37,8 +46,17 @@ STATUS_OPTIONS = ["success", "failed", "blocked", "allowed", "detected"]
 DIRECTION_OPTIONS = ["inbound", "outbound", "local"]
 IP_PREFIXES = ["10.0.0.", "192.168.1.", "172.16.5.", "8.8.8.", "1.1.1."]
 
-def ensure_topic_exists(kafka_broker, topic_name):
-    """Try to ensure the topic exists."""
+#######################
+# Utility Functions
+#######################
+def ensure_topic_exists(kafka_broker: str, topic_name: str) -> None:
+    """
+    Try to ensure the Kafka topic exists, creating it if necessary.
+    
+    Args:
+        kafka_broker: The Kafka broker address
+        topic_name: The name of the topic to create
+    """
     if not kafka_available:
         return
         
@@ -57,18 +75,29 @@ def ensure_topic_exists(kafka_broker, topic_name):
         print(f"Error checking/creating topic: {e}")
         print(f"You may need to manually create the topic using: docker exec edr-redpanda rpk topic create {topic_name}")
 
-def generate_endpoint_id():
+def generate_endpoint_id() -> str:
     """Generate a random endpoint ID."""
     return f"endpoint-{uuid.uuid4().hex[:8]}"
 
-def generate_ip():
+def generate_ip() -> str:
     """Generate a random IP address."""
     prefix = random.choice(IP_PREFIXES)
     suffix = random.randint(1, 254)
     return f"{prefix}{suffix}"
 
-def generate_event(endpoint_id):
-    """Generate a random security event."""
+#######################
+# Event Generation
+#######################
+def generate_event(endpoint_id: str) -> Dict[str, Any]:
+    """
+    Generate a random security event.
+    
+    Args:
+        endpoint_id: The ID of the endpoint generating the event
+        
+    Returns:
+        A dictionary containing the event data
+    """
     event_type = random.choice(EVENT_TYPES)
     
     event = {
@@ -87,11 +116,19 @@ def generate_event(endpoint_id):
     
     return event
 
-def generate_suspicious_events(endpoint_id):
-    """Generate a series of suspicious events that should trigger detection rules."""
+def generate_suspicious_events(endpoint_id: str) -> List[Dict[str, Any]]:
+    """
+    Generate a series of suspicious events that should trigger detection rules.
+    
+    Args:
+        endpoint_id: The ID of the endpoint generating the events
+        
+    Returns:
+        A list of suspicious events
+    """
     events = []
     
-    # Generate suspicious pattern 1: Multiple failed logins from the same user
+    # Pattern 1: Multiple failed logins from the same user (Authentication Brute Force)
     failing_user = random.choice(USERS)
     for _ in range(3):
         event = {
@@ -110,7 +147,7 @@ def generate_suspicious_events(endpoint_id):
         events.append(event)
         time.sleep(0.1)
     
-    # Generate suspicious pattern 2: Suspicious process with network connection from the same process
+    # Pattern 2: Suspicious process with network connection (Suspicious Process Network Activity)
     suspicious_process = random.choice(["mimikatz.exe", "powershell.exe", "cmd.exe"])
     
     process_event = {
@@ -144,7 +181,7 @@ def generate_suspicious_events(endpoint_id):
     }
     events.append(network_event)
     
-    # Generate suspicious pattern 3: File write followed by execution
+    # Pattern 3: File write followed by execution (Suspicious File Execution)
     malicious_file_name = "malware.exe"
     
     file_write_event = {
@@ -180,17 +217,46 @@ def generate_suspicious_events(endpoint_id):
     
     return events
 
-def write_events_to_file(events, filename="generated_events.json"):
-    """Write events to a JSON file."""
+#######################
+# Output Functions
+#######################
+def write_events_to_file(events: List[Dict[str, Any]], filename: str = "generated_events.json") -> None:
+    """
+    Write events to a JSON file.
+    
+    Args:
+        events: List of event dictionaries to write
+        filename: The output filename
+    """
     with open(filename, 'w') as f:
         json.dump(events, f, indent=2)
-    print(f"Wrote {len(events)} events to {filename}")
+    print(f"✅ Wrote {len(events)} events to {filename}")
 
-def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, include_suspicious=True, topic_name=DEFAULT_TOPIC_NAME):
-    """Send events to Kafka broker."""
+def send_events_to_kafka(
+    kafka_broker: str, 
+    endpoints: List[str], 
+    events_per_second: int, 
+    duration: int, 
+    include_suspicious: bool = True, 
+    topic_name: str = DEFAULT_TOPIC_NAME
+) -> int:
+    """
+    Send events to Kafka broker.
+    
+    Args:
+        kafka_broker: The Kafka broker address
+        endpoints: List of endpoint IDs
+        events_per_second: Number of events to send per second
+        duration: Duration in seconds to send events
+        include_suspicious: Whether to include suspicious events
+        topic_name: The Kafka topic name
+        
+    Returns:
+        The number of events sent
+    """
     if not kafka_available:
-        print("Cannot send to Kafka - kafka-python package not installed")
-        print("Run: pip install kafka-python")
+        print("❌ Cannot send to Kafka - kafka-python package not installed")
+        print("   Run: pip install kafka-python")
         return 0
 
     # Ensure topic exists
@@ -205,7 +271,7 @@ def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, i
             max_block_ms=30000,  # Max time to block on send
         )
     except Exception as e:
-        print(f"Error connecting to Kafka broker at {kafka_broker}: {e}")
+        print(f"❌ Error connecting to Kafka broker at {kafka_broker}: {e}")
         print("\nPossible issues and solutions:")
         print("1. Make sure Redpanda is running: docker ps | grep redpanda")
         print(f"2. Create the topic manually: docker exec edr-redpanda rpk topic create {topic_name}")
@@ -213,7 +279,8 @@ def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, i
         print("4. Try using --file option to write events to file instead")
         return 0
     
-    print(f"Sending {events_per_second} events/second for {duration} seconds from {len(endpoints)} endpoints")
+    print(f"📊 Sending {events_per_second} events/second for {duration} seconds from {len(endpoints)} endpoints")
+    print(f"🔄 Events will be sent to topic: {topic_name}")
     
     start_time = time.time()
     event_count = 0
@@ -233,13 +300,18 @@ def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, i
                     producer.send(topic_name, event)
                     event_count += 1
                 except Exception as e:
-                    print(f"\nError sending event: {e}")
+                    print(f"\n❌ Error sending event: {e}")
             
             # Send suspicious events after 10 seconds
             if include_suspicious and not suspicious_sent and time.time() - start_time > 10:
-                print("Sending suspicious events pattern...")
                 suspicious_endpoint = random.choice(endpoints)
                 suspicious_events = generate_suspicious_events(suspicious_endpoint)
+                
+                print("\n🚨 Sending suspicious events pattern...")
+                print("   ↳ Pattern 1: Multiple failed logins - Should trigger 'Authentication Brute Force' detection")
+                print("   ↳ Pattern 2: Suspicious process with network connection - Should trigger 'Suspicious Process Network Activity' detection")
+                print("   ↳ Pattern 3: File write followed by execution - Should trigger 'Suspicious File Execution' detection")
+                print(f"   ↳ All suspicious events sent from endpoint: {suspicious_endpoint}")
                 
                 for event in suspicious_events:
                     all_events.append(event)
@@ -247,25 +319,30 @@ def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, i
                         producer.send(topic_name, event)
                         event_count += 1
                     except Exception as e:
-                        print(f"\nError sending suspicious event: {e}")
+                        print(f"\n❌ Error sending suspicious event: {e}")
                 
                 suspicious_sent = True
             
             try:
                 producer.flush(timeout=5)
             except Exception as e:
-                print(f"\nError flushing messages: {e}")
+                print(f"\n❌ Error flushing messages: {e}")
                 
             current_rate = event_count / (time.time() - start_time) if time.time() > start_time else 0
-            sys.stdout.write(f"\rEvents sent: {event_count} (Rate: {current_rate:.2f} events/sec)")
+            elapsed = time.time() - start_time
+            progress = min(100, (elapsed / duration) * 100)
+            
+            # Clear the line and update with progress bar
+            sys.stdout.write("\r" + " " * 80)  # Clear line
+            sys.stdout.write(f"\r⏳ Progress: [{('█' * int(progress/5)).ljust(20)}] {progress:.1f}% | Events: {event_count} | Rate: {current_rate:.1f}/sec")
             sys.stdout.flush()
             
             # Sleep to maintain the desired rate
             time.sleep(0.1)
     except KeyboardInterrupt:
-        print("\nStopping event generation...")
+        print("\n⏹️ Stopping event generation...")
     except Exception as e:
-        print(f"\nError during event generation: {e}")
+        print(f"\n❌ Error during event generation: {e}")
         
     try:
         producer.flush(timeout=5)
@@ -273,15 +350,18 @@ def send_events_to_kafka(kafka_broker, endpoints, events_per_second, duration, i
     except Exception as _:
         pass
     
-    print(f"\nTotal events sent: {event_count}")
+    print(f"\n✅ Total events sent: {event_count} in {time.time() - start_time:.2f} seconds")
     
     # If no events were sent successfully, save to file as fallback
     if event_count == 0 and all_events:
-        print("No events were sent successfully. Saving to file instead...")
+        print("⚠️ No events were sent successfully. Saving to file instead...")
         write_events_to_file(all_events)
         
     return event_count
 
+#######################
+# Main Function
+#######################
 def main():
     parser = argparse.ArgumentParser(description='EDR/XDR System Test Data Generator')
     parser.add_argument('--kafka', default=DEFAULT_KAFKA_BROKER, help='Kafka broker address')
@@ -296,22 +376,23 @@ def main():
     # Use the topic name from args without global modification
     topic_name = args.topic
     
-    print("EDR/XDR Test Data Generator")
-    print("===========================")
-    print(f"Kafka Broker: {args.kafka}")
-    print(f"Endpoint Count: {args.endpoints}")
-    print(f"Event Rate: {args.rate}/second")
-    print(f"Duration: {args.duration} seconds")
-    print(f"Include Suspicious Events: {not args.no_suspicious}")
-    print(f"Topic Name: {topic_name}")
-    print("===========================")
+    print("\n🛡️  EDR/XDR Test Data Generator")
+    print("=" * 50)
+    print(f"📊 Configuration:")
+    print(f"   ↳ Kafka Broker: {args.kafka}")
+    print(f"   ↳ Endpoint Count: {args.endpoints}")
+    print(f"   ↳ Event Rate: {args.rate}/second")
+    print(f"   ↳ Duration: {args.duration} seconds")
+    print(f"   ↳ Include Suspicious Events: {not args.no_suspicious}")
+    print(f"   ↳ Topic Name: {topic_name}")
+    print("=" * 50)
     
     # Generate endpoint IDs
     endpoints = [generate_endpoint_id() for _ in range(args.endpoints)]
     
     if args.file:
         # Generate events to file
-        print("Generating events to file...")
+        print("📝 Generating events to file...")
         all_events = []
         for _ in range(min(1000, args.rate * args.duration)):
             endpoint_id = random.choice(endpoints)
@@ -320,6 +401,11 @@ def main():
         # Add some suspicious events
         if not args.no_suspicious:
             suspicious_endpoint = random.choice(endpoints)
+            print("\n🚨 Adding suspicious events to file...")
+            print("   ↳ Pattern 1: Multiple failed logins - Should trigger 'Authentication Brute Force' detection")
+            print("   ↳ Pattern 2: Suspicious process with network connection - Should trigger 'Suspicious Process Network Activity' detection")
+            print("   ↳ Pattern 3: File write followed by execution - Should trigger 'Suspicious File Execution' detection")
+            print(f"   ↳ All suspicious events from endpoint: {suspicious_endpoint}")
             all_events.extend(generate_suspicious_events(suspicious_endpoint))
             
         write_events_to_file(all_events)
@@ -331,7 +417,7 @@ def main():
             args.rate, 
             args.duration, 
             not args.no_suspicious,
-            topic_name  # Pass the topic name as a parameter
+            topic_name
         )
 
 if __name__ == "__main__":

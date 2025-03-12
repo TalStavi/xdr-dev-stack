@@ -169,6 +169,293 @@ clickhouse client -h localhost -u default --password edrpassword -n <<-EOSQL
     FROM edr.events
     WHERE user != ''
     GROUP BY user;
+    
+    -- Dashboard stats refreshable materialized view
+    -- This automatically refreshes every minute to provide real-time dashboard metrics
+    DROP VIEW IF EXISTS edr.dashboard_stats_refresher;
+    DROP VIEW IF EXISTS edr.dashboard_stats_mv;
+    
+    CREATE MATERIALIZED VIEW IF NOT EXISTS edr.dashboard_stats_mv
+    REFRESH EVERY 5 SECOND
+    ENGINE = ReplacingMergeTree()
+    ORDER BY (snapshot_date, snapshot_hour, snapshot_minute)
+    POPULATE AS
+    WITH 
+        toDate(now()) as current_date,
+        toHour(now()) as current_hour,
+        toMinute(now()) as current_minute,
+        
+        -- Severity distribution subquery
+        severity_levels_array AS (
+            SELECT groupArray(severity) as levels
+            FROM (
+                SELECT 
+                    severity
+                FROM edr.user_detections_mv
+                WHERE date >= current_date - 1
+                GROUP BY severity
+                ORDER BY severity
+            )
+        ),
+        
+        severity_counts_array AS (
+            SELECT groupArray(total) as counts
+            FROM (
+                SELECT 
+                    severity,
+                    sum(detection_count) as total
+                FROM edr.user_detections_mv
+                WHERE date >= current_date - 1
+                GROUP BY severity
+                ORDER BY severity
+            )
+        ),
+        
+        -- Event type distribution subquery
+        event_types_array AS (
+            SELECT groupArray(event_type) as types
+            FROM (
+                SELECT 
+                    event_type
+                FROM edr.endpoint_events_mv
+                WHERE date >= current_date - 1
+                GROUP BY event_type
+                ORDER BY sum(event_count) DESC
+                LIMIT 10
+            )
+        ),
+        
+        event_counts_array AS (
+            SELECT groupArray(total) as counts
+            FROM (
+                SELECT 
+                    event_type,
+                    sum(event_count) as total
+                FROM edr.endpoint_events_mv
+                WHERE date >= current_date - 1
+                GROUP BY event_type
+                ORDER BY total DESC
+                LIMIT 10
+            )
+        ),
+        
+        -- Active endpoints arrays
+        active_endpoint_ids_array AS (
+            SELECT groupArray(endpoint_id) as ids
+            FROM (
+                SELECT endpoint_id
+                FROM edr.endpoint_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        active_endpoint_users_array AS (
+            SELECT groupArray(primary_user) as users
+            FROM (
+                SELECT endpoint_id, primary_user
+                FROM edr.endpoint_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        active_endpoint_counts_array AS (
+            SELECT groupArray(total_events) as counts
+            FROM (
+                SELECT endpoint_id, total_events
+                FROM edr.endpoint_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        -- Active users arrays
+        active_user_names_array AS (
+            SELECT groupArray(user) as names
+            FROM (
+                SELECT user
+                FROM edr.user_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        active_user_counts_array AS (
+            SELECT groupArray(total_events) as counts
+            FROM (
+                SELECT user, total_events
+                FROM edr.user_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        active_user_endpoints_array AS (
+            SELECT groupArray(unique_endpoints) as endpoints
+            FROM (
+                SELECT user, unique_endpoints
+                FROM edr.user_details_mv
+                WHERE last_seen >= now() - INTERVAL 24 HOUR
+                ORDER BY total_events DESC
+                LIMIT 50
+            )
+        ),
+        
+        -- Recent events arrays
+        recent_event_ids_array AS (
+            SELECT groupArray(id) as ids
+            FROM (
+                SELECT id
+                FROM edr.events
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_event_timestamps_array AS (
+            SELECT groupArray(timestamp) as timestamps
+            FROM (
+                SELECT id, timestamp
+                FROM edr.events
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_event_endpoints_array AS (
+            SELECT groupArray(endpoint_id) as endpoints
+            FROM (
+                SELECT id, endpoint_id
+                FROM edr.events
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_event_types_array AS (
+            SELECT groupArray(event_type) as types
+            FROM (
+                SELECT id, event_type
+                FROM edr.events
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_event_users_array AS (
+            SELECT groupArray(user) as users
+            FROM (
+                SELECT id, user
+                FROM edr.events
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        -- Recent detections arrays
+        recent_detection_ids_array AS (
+            SELECT groupArray(id) as ids
+            FROM (
+                SELECT id
+                FROM edr.detections
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_detection_timestamps_array AS (
+            SELECT groupArray(timestamp) as timestamps
+            FROM (
+                SELECT id, timestamp
+                FROM edr.detections
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_detection_endpoints_array AS (
+            SELECT groupArray(endpoint_id) as endpoints
+            FROM (
+                SELECT id, endpoint_id
+                FROM edr.detections
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_detection_rules_array AS (
+            SELECT groupArray(rule_id) as rules
+            FROM (
+                SELECT id, rule_id
+                FROM edr.detections
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        recent_detection_severities_array AS (
+            SELECT groupArray(severity) as severities
+            FROM (
+                SELECT id, severity
+                FROM edr.detections
+                ORDER BY timestamp DESC
+                LIMIT 20
+            )
+        ),
+        
+        -- Get event and detection counts
+        event_count AS (
+            SELECT sum(event_count) as total_events
+            FROM edr.endpoint_events_mv
+            WHERE date >= current_date - 1
+        ),
+        
+        detection_count AS (
+            SELECT sum(detection_count) as total_detections
+            FROM edr.endpoint_detections_mv
+            WHERE date >= current_date - 1
+        )
+    
+    SELECT
+        current_date as snapshot_date,
+        current_hour as snapshot_hour,
+        current_minute as snapshot_minute,
+        now() as snapshot_timestamp,
+        
+        (SELECT total_events FROM event_count) as total_events,
+        (SELECT total_detections FROM detection_count) as total_detections,
+        
+        (SELECT levels FROM severity_levels_array) as severity_levels,
+        (SELECT counts FROM severity_counts_array) as severity_counts,
+        
+        (SELECT types FROM event_types_array) as event_types,
+        (SELECT counts FROM event_counts_array) as event_counts,
+        
+        (SELECT ids FROM active_endpoint_ids_array) as active_endpoint_ids,
+        (SELECT users FROM active_endpoint_users_array) as active_endpoint_users,
+        (SELECT counts FROM active_endpoint_counts_array) as active_endpoint_counts,
+        
+        (SELECT names FROM active_user_names_array) as active_user_names,
+        (SELECT counts FROM active_user_counts_array) as active_user_counts,
+        (SELECT endpoints FROM active_user_endpoints_array) as active_user_endpoints,
+        
+        (SELECT ids FROM recent_event_ids_array) as recent_event_ids,
+        (SELECT timestamps FROM recent_event_timestamps_array) as recent_event_timestamps,
+        (SELECT endpoints FROM recent_event_endpoints_array) as recent_event_endpoints,
+        (SELECT types FROM recent_event_types_array) as recent_event_types,
+        (SELECT users FROM recent_event_users_array) as recent_event_users,
+        
+        (SELECT ids FROM recent_detection_ids_array) as recent_detection_ids,
+        (SELECT timestamps FROM recent_detection_timestamps_array) as recent_detection_timestamps,
+        (SELECT endpoints FROM recent_detection_endpoints_array) as recent_detection_endpoints,
+        (SELECT rules FROM recent_detection_rules_array) as recent_detection_rules,
+        (SELECT severities FROM recent_detection_severities_array) as recent_detection_severities;
 EOSQL
 
-echo "ClickHouse schema initialization complete."
+echo "ClickHouse schema initialization complete, including refreshable dashboard materialized view."
